@@ -9,8 +9,7 @@ NBR_SERVERS=3
 
 main(){
 	startTest
-	COT=github.com/dedis/cothority
-	buildConode $COT/cosi/service $COT/pop/service
+	buildConode gopkg.in/dedis/cothority.v1/cosi/service github.com/dedis/student_17_pop/service
 	echo "Creating directories"
 	for n in $(seq $NBR_CLIENTS); do
 		cl=cl$n
@@ -225,25 +224,25 @@ testOrgLink(){
 testCheck(){
 	runCoBG 1 2 3
 	cat co*/public.toml > check.toml
-	testOK dbgRun ./pop -d $DBG_APP check check.toml
+	testOK dbgRun ./$APP -d $DBG_APP check check.toml
 }
 
 testBuild(){
 	testOK dbgRun ./conode --help
-	testOK dbgRun ./pop --help
+	testOK dbgRun ./$APP --help
 }
 
 runCl(){
 	local CFG=cl$1
 	shift
-	dbgRun ./pop -d $DBG_APP -c $CFG $@
+	dbgRun ./$APP -d $DBG_APP -c $CFG $@
 }
 
 runDbgCl(){
 	local DBG=$1
 	local CFG=cl$2
 	shift 2
-	./pop -d $DBG -c $CFG $@
+	./$APP -d $DBG -c $CFG $@
 }
 
 main
