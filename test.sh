@@ -46,7 +46,7 @@ testAtVerify(){
 }
 
 mkClSign(){
-	mkClJoin
+	mkAtJoin
 	runDbgCl 1 1 attendee sign msg1 ctx1 > sign1.toml
 	runDbgCl 1 2 attendee sign msg1 ctx1 > sign2.toml
 	tag1=$( grep Tag: sign1.toml | sed -e "s/.* //")
@@ -56,7 +56,7 @@ mkClSign(){
 }
 
 testAtSign(){
-	mkClJoin
+	mkAtJoin
 	testFail runCl 1 attendee sign
 	testOK runCl 1 attendee sign msg1 ctx1
 	testOK runCl 1 attendee sign msg1 ctx1
@@ -102,7 +102,8 @@ testOrgFinal3(){
 	runDbgCl 1 2 org final > final2.toml
 	testNGrep , echo $( runCl 1 org final | grep Attend )
 	testNGrep , echo $( runCl 2 org final | grep Attend )
-	testOK [ $( md5 -q final1.toml ) = $( md5 -q final2.toml ) ]
+	cmp -s final1.toml final2.toml
+	testOK [ $? -eq 0 ]
 }
 
 testOrgFinal2(){
@@ -121,7 +122,8 @@ testOrgFinal2(){
 	runDbgCl 1 2 org final > final2.toml
 	testNGrep , echo $( runCl 1 org final | grep Attend )
 	testNGrep , echo $( runCl 2 org final | grep Attend )
-	testOK [ $( md5 -q final1.toml ) = $( md5 -q final2.toml ) ]
+	cmp -s final1.toml final2.toml
+	testOK [ $? -eq 0 ]
 }
 
 mkConfig(){
@@ -158,7 +160,8 @@ testOrgPublic(){
 testAtCreate(){
 	testOK runCl 1 attendee create
 	mkKeypair
-	testOK [ $( md5 -q keypair.1 ) != $( md5 -q keypair.2 ) ]
+	cmp keypair.1 keypair.2
+	testOK [ $? -eq 1 ]
 }
 
 mkKeypair(){
