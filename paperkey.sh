@@ -28,7 +28,7 @@ for i in $( seq -f "%02g" ${1:-10} ); do
 	qrencode -o $TMP/Pictures/$IMG_PRIV ed25519priv:$PRIV
 	( cd $TMP; zip -qr $OFILE . )
 	rm -rf $KP $TMP
-	/Applications/LibreOffice.app/Contents/MacOS/soffice --headless --convert-to pdf $OFILE
+	soffice --headless --convert-to pdf $OFILE
 done
 echo -n "["
 for p in $ATTS; do
