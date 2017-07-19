@@ -63,7 +63,7 @@ func main() {
 	appCli.Commands = []cli.Command{}
 	appCli.Commands = []cli.Command{
 		commandOrg,
-		commandClient,
+		commandAttendee,
 		{
 			Name:      "check",
 			Aliases:   []string{"c"},

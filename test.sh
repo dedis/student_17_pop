@@ -25,55 +25,55 @@ main(){
 	test OrgLink
 	test Save
 	test OrgConfig
-	test ClCreate
+	test AtCreate
 	test OrgPublic
 	test OrgFinal1
 	test OrgFinal2
 	test OrgFinal3
-	test ClJoin
-	test ClSign
-	test ClVerify
+	test AtJoin
+	test AtSign
+	test AtVerify
 	stopTest
 }
 
-testClVerify(){
+testAtVerify(){
 	mkClSign
-	testFail runCl 1 client verify msg1 ctx1 $tag1 $sig1
-	testOK runCl 1 client verify msg1 ctx1 $sig1 $tag1
-	testFail runCl 1 client verify msg1 ctx1 $sig1 $tag2
-	testOK runCl 1 client verify msg1 ctx1 $sig2 $tag2
-	testFail runCl 1 client verify msg1 ctx1 $sig2 $tag1
+	testFail runCl 1 attendee verify msg1 ctx1 $tag1 $sig1
+	testOK runCl 1 attendee verify msg1 ctx1 $sig1 $tag1
+	testFail runCl 1 attendee verify msg1 ctx1 $sig1 $tag2
+	testOK runCl 1 attendee verify msg1 ctx1 $sig2 $tag2
+	testFail runCl 1 attendee verify msg1 ctx1 $sig2 $tag1
 }
 
 mkClSign(){
 	mkClJoin
-	runDbgCl 1 1 client sign msg1 ctx1 > sign1.toml
-	runDbgCl 1 2 client sign msg1 ctx1 > sign2.toml
+	runDbgCl 1 1 attendee sign msg1 ctx1 > sign1.toml
+	runDbgCl 1 2 attendee sign msg1 ctx1 > sign2.toml
 	tag1=$( grep Tag: sign1.toml | sed -e "s/.* //")
 	sig1=$( grep Signature: sign1.toml | sed -e "s/.* //")
 	tag2=$( grep Tag: sign2.toml | sed -e "s/.* //")
 	sig2=$( grep Signature: sign2.toml | sed -e "s/.* //")
 }
 
-testClSign(){
+testAtSign(){
 	mkClJoin
-	testFail runCl 1 client sign
-	testOK runCl 1 client sign msg1 ctx1
-	testOK runCl 1 client sign msg1 ctx1
+	testFail runCl 1 attendee sign
+	testOK runCl 1 attendee sign msg1 ctx1
+	testOK runCl 1 attendee sign msg1 ctx1
 }
 
-mkClJoin(){
+mkAtJoin(){
 	mkFinal
-	runCl 1 client join final.toml $priv1
-	runCl 2 client join final.toml $priv2
+	runCl 1 attendee join final.toml $priv1
+	runCl 2 attendee join final.toml $priv2
 }
 
-testClJoin(){
+testAtJoin(){
 	mkFinal
-	testFail runCl 1 client join final.toml
-	testFail runCl 1 client join final.toml badkey
-	testOK runCl 1 client join final.toml $priv1
-	testOK runCl 2 client join final.toml $priv2
+	testFail runCl 1 attendee join final.toml
+	testFail runCl 1 attendee join final.toml badkey
+	testOK runCl 1 attendee join final.toml $priv1
+	testOK runCl 2 attendee join final.toml $priv2
 }
 
 mkFinal(){
@@ -155,15 +155,15 @@ testOrgPublic(){
 	testOK runCl 1 org public $pub2
 }
 
-testClCreate(){
-	testOK runCl 1 client create
+testAtCreate(){
+	testOK runCl 1 attendee create
 	mkKeypair
 	testOK [ $( md5 -q keypair.1 ) != $( md5 -q keypair.2 ) ]
 }
 
 mkKeypair(){
-	runDbgCl 1 1 client create > keypair.1
-	runDbgCl 1 1 client create > keypair.2
+	runDbgCl 1 1 attendee create > keypair.1
+	runDbgCl 1 1 attendee create > keypair.2
 	priv1=$( grep Private keypair.1 | sed -e "s/.* //" )
 	priv2=$( grep Private keypair.2 | sed -e "s/.* //" )
 	pub1=$( grep Public keypair.1 | sed -e "s/.* //" )

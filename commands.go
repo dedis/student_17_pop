@@ -6,7 +6,7 @@ import "gopkg.in/urfave/cli.v1"
 This holds the cli-commands so the main-file is less cluttered.
 */
 
-var commandOrg, commandClient cli.Command
+var commandOrg, commandAttendee cli.Command
 
 func init() {
 	commandOrg = cli.Command{
@@ -41,9 +41,10 @@ func init() {
 			},
 		},
 	}
-	commandClient = cli.Command{
-		Name:  "client",
-		Usage: "client for a pop-party",
+
+	commandAttendee = cli.Command{
+		Name:  "attendee",
+		Usage: "attendee of a pop-party",
 		Subcommands: []cli.Command{
 			{
 				Name:    "create",
