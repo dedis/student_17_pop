@@ -4,7 +4,7 @@ DBG_TEST=1
 DBG_APP=3
 NBR_CLIENTS=3
 NBR_SERVERS=3
-
+NBR_SERVERS_GROUP=$NBR_SERVERS
 . $GOPATH/src/gopkg.in/dedis/onet.v1/app/libtest.sh
 
 main(){
@@ -16,9 +16,12 @@ main(){
 		rm -f $cl/*
 		mkdir -p $cl
 	done
-	addr1=127.0.0.1:2002
-	addr2=127.0.0.1:2004
-	addr3=127.0.0.1:2006
+	addr=()
+	addr[1]=127.0.0.1:2002
+	addr[2]=127.0.0.1:2004
+	addr[3]=127.0.0.1:2006
+
+
 
 	test Build
 	test Check
@@ -27,6 +30,7 @@ main(){
 	test OrgConfig
 	test AtCreate
 	test OrgPublic
+	test OrgPublic2
 	test OrgFinal1
 	test OrgFinal2
 	test OrgFinal3
@@ -38,190 +42,256 @@ main(){
 
 testAtVerify(){
 	mkClSign
-	testFail runCl 1 attendee verify msg1 ctx1 $tag1 $sig1
-	testOK runCl 1 attendee verify msg1 ctx1 $sig1 $tag1
-	testFail runCl 1 attendee verify msg1 ctx1 $sig1 $tag2
-	testOK runCl 1 attendee verify msg1 ctx1 $sig2 $tag2
-	testFail runCl 1 attendee verify msg1 ctx1 $sig2 $tag1
+	testFail runCl 1 attendee verify msg1 ctx1 ${tag[1]} ${sig[1]}
+	testFail runCl 1 attendee verify msg1 ctx1 ${tag[1]} ${sig[1]} ${pop_hash[1]}
+	testFail runCl 1 attendee verify msg1 ctx1 ${sig[1]} ${tag[1]} ${pop_hash[2]}
+	testOK runCl 1 attendee verify msg1 ctx1 ${sig[1]} ${tag[1]} ${pop_hash[1]}
+	testFail runCl 1 attendee verify msg1 ctx1 ${sig[1]} ${tag[2]} ${pop_hash[1]}
+
+	testFail runCl 1 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} ${pop_hash[1]}
+	testOK runCl 2 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} ${pop_hash[2]}
+	testFail runCl 2 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} ${pop_hash[2]}
+	testOK runCl 3 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} ${pop_hash[3]}
+
+	testFail runCl 1 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} ${pop_hash[2]}
+	testOK runCl 1 attendee join ${priv[1]} ${pop_hash[2]}
+	testOK runCl 1 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} ${pop_hash[2]}
 }
 
+tag=()
+sig=()
 mkClSign(){
 	mkAtJoin
-	runDbgCl 1 1 attendee sign msg1 ctx1 > sign1.toml
-	runDbgCl 1 2 attendee sign msg1 ctx1 > sign2.toml
-	tag1=$( grep Tag: sign1.toml | sed -e "s/.* //")
-	sig1=$( grep Signature: sign1.toml | sed -e "s/.* //")
-	tag2=$( grep Tag: sign2.toml | sed -e "s/.* //")
-	sig2=$( grep Signature: sign2.toml | sed -e "s/.* //")
+	for i in {1..3}; do
+		runDbgCl 1 $i attendee sign msg1 ctx1 ${pop_hash[$i]} > sign$i.toml
+		tag[$i]=$( grep Tag: sign$i.toml | sed -e "s/.* //")
+		sig[$i]=$( grep Signature: sign$i.toml | sed -e "s/.* //")
+	done
 }
 
 testAtSign(){
 	mkAtJoin
 	testFail runCl 1 attendee sign
-	testOK runCl 1 attendee sign msg1 ctx1
-	testOK runCl 1 attendee sign msg1 ctx1
+	testFail runCl 1 attendee sign msg1 ctx1 ${pop_hash[2]}
+	testOK runCl 1 attendee sign msg1 ctx1 ${pop_hash[1]}
+	testOK runCl 2 attendee sign msg2 ctx2 ${pop_hash[2]}
+	testOK runCl 3 attendee sign msg3 ctx3 ${pop_hash[3]}
 }
 
 mkAtJoin(){
 	mkFinal
-	runCl 1 attendee join final.toml $priv1
-	runCl 2 attendee join final.toml $priv2
+	for i in {1..3}; do
+		runCl $i attendee join ${priv[$i]} ${pop_hash[$i]}
+	done
 }
 
 testAtJoin(){
 	mkFinal
-	testFail runCl 1 attendee join final.toml
-	testFail runCl 1 attendee join final.toml badkey
-	testOK runCl 1 attendee join final.toml $priv1
-	testOK runCl 2 attendee join final.toml $priv2
+	testFail runCl 1 attendee join
+	testFail runCl 1 attendee join ${priv[1]}
+	testFail runCl 1 attendee join badkey ${pop_hash[1]}
+	testFail runCl 1 attendee join ${priv[1]} ${pop_hash[3]}
+	testOK runCl 1 attendee join ${priv[1]} ${pop_hash[1]}
+	testOK runCl 2 attendee join ${priv[2]} ${pop_hash[2]}
+	testOK runCl 3 attendee join ${priv[3]} ${pop_hash[3]}
 }
 
 mkFinal(){
-	mkConfig 1 2
-	runCl 1 org public $pub1
-	runCl 1 org public $pub2
-	runCl 2 org public $pub1
-	runCl 2 org public $pub2
-	runCl 1 org final
-	runDbgCl 1 2 org final | tail -n +3 | head -n 8 > final.toml
+	mkConfig 3 3 2 3
+
+	# att1 - p1, p2; att2 - p2; att3 - p3;
+	runCl 1 org public ${pub[1]} ${pop_hash[1]}
+	runCl 3 org public ${pub[1]} ${pop_hash[1]}
+	runCl 1 org public ${pub[2]} ${pop_hash[2]}
+	runCl 2 org public ${pub[2]} ${pop_hash[2]}
+	runCl 2 org public ${pub[3]} ${pop_hash[3]}
+	runCl 3 org public ${pub[3]} ${pop_hash[3]}
+
+	runCl 1 org public ${pub[1]} ${pop_hash[2]}
+	runCl 2 org public ${pub[1]} ${pop_hash[2]}
+
+	runCl 1 org final  ${pop_hash[1]}
+	runCl 3 org final  ${pop_hash[1]}
+	runCl 1 org final  ${pop_hash[2]}
+	runCl 2 org final  ${pop_hash[2]}
+	runCl 2 org final  ${pop_hash[3]}
+	runCl 3 org final  ${pop_hash[3]}
 }
 
 testOrgFinal3(){
-	mkLink
-	mkKeypair
-	mkPopConfig
-	runCl 1 org config pop_desc.toml public.toml
-	runCl 2 org config pop_desc.toml public.toml
-	runCl 1 org public $pub2
-	runCl 2 org public $pub1
-	runCl 2 org public $pub2
-	testFail runCl 1 org final
-	testOK runCl 2 org final
-	testOK runCl 1 org final
-	runDbgCl 1 1 org final > final1.toml
-	runDbgCl 1 2 org final > final2.toml
-	testNGrep , echo $( runCl 1 org final | grep Attend )
-	testNGrep , echo $( runCl 2 org final | grep Attend )
-	cmp -s final1.toml final2.toml
-	testOK [ $? -eq 0 ]
+	mkConfig 3 3 2 1
+	runCl 1 org public ${pub[1]} ${pop_hash[1]}
+	runCl 1 org public ${pub[1]} ${pop_hash[2]}
+	runCl 2 org public ${pub[1]} ${pop_hash[2]}
+	runCl 2 org public ${pub[1]} ${pop_hash[3]}
+	runCl 3 org public ${pub[1]} ${pop_hash[1]}
+	runCl 3 org public ${pub[1]} ${pop_hash[3]}
+
+	testFail runCl 1 org final ${pop_hash[1]}
+	testFail runCl 2 org final ${pop_hash[1]}
+	testOK runCl 3 org final ${pop_hash[1]}
+
+	testFail runCl 1 org final ${pop_hash[2]}
+	testFail runCl 3 org final ${pop_hash[2]}
+	testOK runCl 2 org final ${pop_hash[2]}
+
+	testFail runCl 2 org final ${pop_hash[3]}
+	testOK runCl 3 org final ${pop_hash[3]}
 }
+
 
 testOrgFinal2(){
-	mkLink
-	mkKeypair
-	mkPopConfig
-	runCl 1 org config pop_desc.toml public.toml
-	runCl 2 org config pop_desc.toml public.toml
-	runCl 1 org public $pub2
-	runCl 2 org public $pub1
-	runCl 2 org public $pub2
-	testFail runCl 1 org final
-	testOK runCl 2 org final
-	testOK runCl 1 org final
-	runDbgCl 1 1 org final > final1.toml
-	runDbgCl 1 2 org final > final2.toml
+	mkConfig 2 1 1 2
+	runCl 1 org public ${pub[2]} ${pop_hash[1]}
+	runCl 2 org public ${pub[1]} ${pop_hash[1]}
+	runCl 2 org public ${pub[2]} ${pop_hash[1]}
+	testFail runCl 1 org final ${pop_hash[1]}
+	testOK runCl 2 org final ${pop_hash[1]}
+	testOK runCl 1 org final ${pop_hash[1]}
+	runDbgCl 1 1 org final ${pop_hash[1]} > final1.toml
+	runDbgCl 1 2 org final ${pop_hash[1]} > final2.toml
 	testNGrep , echo $( runCl 1 org final | grep Attend )
 	testNGrep , echo $( runCl 2 org final | grep Attend )
 	cmp -s final1.toml final2.toml
 	testOK [ $? -eq 0 ]
-}
-
-mkConfig(){
-	local cl
-	mkLink
-	mkKeypair
-	mkPopConfig
-	for cl in $@; do
-		runCl $cl org config pop_desc.toml public.toml
-	done
 }
 
 testOrgFinal1(){
-	mkLink
-	mkKeypair
-	mkPopConfig
-	runCl 1 org config pop_desc.toml public.toml
-	runCl 2 org config pop_desc.toml public.toml
-	runCl 1 org public $pub1
-	runCl 1 org public $pub2
-	runCl 2 org public "\[\"$pub1\",\"$pub2\"\]"
+	mkConfig 2 1 1 2
+	runCl 1 org public ${pub[1]} ${pop_hash[1]}
+	runCl 1 org public ${pub[2]} ${pop_hash[1]}
+	runCl 2 org public "\[\"${pub[1]}\",\"${pub[2]}\"\]" ${pop_hash[1]}
 	testFail runCl 1 org final
-	testOK runCl 2 org final
+	testFail runCl 1 org final bad_hash
+	testFail runCl 1 org final ${pop_hash[1]}
+	testOK runCl 2 org final ${pop_hash[1]}
+}
+
+testOrgPublic2(){
+	mkConfig 3 3 2 1
+	testOK runCl 1 org public ${pub[1]} ${pop_hash[1]}
+	testOK runCl 1 org public ${pub[1]} ${pop_hash[2]}
+	testOK runCl 2 org public ${pub[1]} ${pop_hash[2]}
+	testOK runCl 2 org public ${pub[1]} ${pop_hash[3]}
+	testOK runCl 3 org public ${pub[1]} ${pop_hash[1]}
+	testOK runCl 3 org public ${pub[1]} ${pop_hash[3]}
+
+	testFail runCl 3 org public ${pub[1]} ${pop_hash[2]}
 }
 
 testOrgPublic(){
-	mkKeypair
+	mkConfig 1 1 1 2
 	testFail runCl 1 org public
-	testOK runCl 1 org public $pub1
-	testFail runCl 1 org public $pub1
-	testOK runCl 1 org public $pub2
+	testFail runCl 1 org public ${pub[1]}
+	testFail runCl 1 org public ${pub[1]} wrong_hash
+	testOK runCl 1 org public ${pub[1]} ${pop_hash[1]}
+	testFail runCl 1 org public ${pub[1]} ${pop_hash[1]}
+	testOK runCl 1 org public ${pub[2]} ${pop_hash[1]}
+}
+
+# need to store many party hashes as variables
+pop_hash=()
+# usage: $1 organizer and $2 parties, each has $3 parties, $4 key pairs
+# example: 3 organizers, 2 parties for each
+# 1st org: parties #1, #2
+# 2nd org: parties #2, #3
+# 3rd org: parties #1, #3
+mkConfig(){
+	local cl
+	local pc
+	mkLink $1
+	mkPopConfig $2 $1
+	mkKeypair $4
+	for (( cl=1; cl<=$1; cl++ ))
+	do
+		for (( pc=1; pc<=$3; pc++ ))
+		do
+			num_pc=$((($pc + $cl + 1) % $2 + 1))
+			runDbgCl 1 $cl org config pop_desc$num_pc.toml group$num_pc.toml > pop_hash
+			#echo "added $cl to $num_pc"
+			#cat group$num_pc.toml
+			pop_hash[$num_pc]=$(grep config: pop_hash | sed -e "s/.* //")
+		done
+	done
 }
 
 testAtCreate(){
 	testOK runCl 1 attendee create
-	mkKeypair
+	runDbgCl 1 1 attendee create > keypair.1
+	runDbgCl 1 1 attendee create > keypair.2
 	cmp keypair.1 keypair.2
 	testOK [ $? -eq 1 ]
 }
 
+priv=()
+pub=()
 mkKeypair(){
-	runDbgCl 1 1 attendee create > keypair.1
-	runDbgCl 1 1 attendee create > keypair.2
-	priv1=$( grep Private keypair.1 | sed -e "s/.* //" )
-	priv2=$( grep Private keypair.2 | sed -e "s/.* //" )
-	pub1=$( grep Public keypair.1 | sed -e "s/.* //" )
-	pub2=$( grep Public keypair.2 | sed -e "s/.* //" )
+	local i
+	for (( i=1; i<=$1; i++ ))
+	do
+		runDbgCl 1 1 attendee create > keypair
+		priv[i]=$( grep Private keypair | sed -e "s/.* //" )
+		pub[i]=$( grep Public keypair | sed -e "s/.* //" )
+	done
 }
 
 testOrgConfig(){
-	mkPopConfig
-	testFail runCl 1 org config pop_desc.toml public.toml
-	mkLink
-	testOK runCl 1 org config pop_desc.toml public.toml
-	testOK runCl 2 org config pop_desc.toml public.toml
+	mkPopConfig 1 1
+	testFail runCl 1 org config pop_desc1.toml group1.toml
+	mkLink 2
+	testOK runCl 1 org config pop_desc1.toml group1.toml
+	testOK runCl 2 org config pop_desc1.toml group1.toml
 }
 
+# $1 number of parties $2 number of organizers
 mkPopConfig(){
-	cat << EOF > pop_desc.toml
-Name = "33c3 Proof-of-Personhood Party"
+	local n
+	for (( n=1; n<=$1; n++ ))
+	do
+		cat << EOF > pop_desc$n.toml
+Name = "33c3 Proof-of-Personhood Party$n"
 DateTime = "2016-12-29 15:00 UTC"
-Location = "Earth, Germany, Hamburg, Hall A1"
+Location = "Earth, Germany, City$1, Hall A1"
 EOF
+	sed -n "$((4*$n-3)),$((4*$n))p" public.toml > group$(($n%$1+1)).toml
+	local m=$(($n%$2 + 1))
+	sed -n "$((4*$m-3)),$((4*$m))p" public.toml >> group$(($n%$1+1)).toml
+	done
 }
 
 testSave(){
 	runCoBG 1 2
-	mkPopConfig
+	mkPopConfig 1 2
 
-	testFail runCl 1 org config pop_desc.toml public.toml
+	testFail runCl 1 org config pop_desc1.toml group1.toml
 	pkill -9 -f conode
-	mkLink
+	mkLink 2
 	pkill -9 -f conode
 	runCoBG 1 2
-	testOK runCl 1 org config pop_desc.toml public.toml
+	testOK runCl 1 org config pop_desc1.toml group1.toml
 }
 
 mkLink(){
-	runCoBG 1 2
-	runCl 1 org link $addr1
-	pin1=$( grep PIN ${COLOG}1.log | sed -e "s/.* //" )
-	runCl 1 org link $addr1 $pin1
-	runCl 2 org link $addr2
-	pin2=$( grep PIN ${COLOG}2.log | sed -e "s/.* //" )
-	runCl 2 org link $addr2 $pin2
+	runCoBG `seq $1`
+	for (( serv=1; serv<=$1; serv++ ))
+	do
+		runCl $serv org link ${addr[$serv]}
+		pin=$( grep PIN ${COLOG}$serv.log | sed -e "s/.* //" )
+		testOK runCl $serv org link ${addr[$serv]} $pin
+	done
 }
 
 testOrgLink(){
 	runCoBG 1 2
-	testOK runCl 1 org link $addr1
+	testOK runCl 1 org link ${addr[1]}
 	testGrep PIN cat ${COLOG}1.log
 	pin1=$( grep PIN ${COLOG}1.log | sed -e "s/.* //" )
-	testFail runCl 1 org link $addr1 abcdefg
-	testOK runCl 1 org link $addr1 $pin1
-	testOK runCl 2 org link $addr2
+	testFail runCl 1 org link ${addr[1]} abcdefg
+	testOK runCl 1 org link ${addr[1]} $pin1
+	testOK runCl 2 org link ${addr[2]}
 	testGrep PIN cat ${COLOG}2.log
 	pin2=$( grep PIN ${COLOG}2.log | sed -e "s/.* //" )
-	testOK runCl 2 org link $addr2 $pin2
+	testOK runCl 2 org link ${addr[2]} $pin2
 }
 
 testCheck(){

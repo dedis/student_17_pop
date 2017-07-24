@@ -25,6 +25,7 @@ import (
 	"gopkg.in/dedis/crypto.v0/anon"
 	"gopkg.in/dedis/crypto.v0/config"
 	"gopkg.in/dedis/crypto.v0/random"
+	"gopkg.in/dedis/onet.v1"
 	"gopkg.in/dedis/onet.v1/app"
 	"gopkg.in/dedis/onet.v1/crypto"
 	"gopkg.in/dedis/onet.v1/log"
@@ -38,9 +39,6 @@ func init() {
 
 // Config represents either a manager or an attendee configuration.
 type Config struct {
-	// Index of the attendee in the final statement. If the index
-	// is -1, then this pop holds an organizer.
-	Index int
 	// Private key of attendee or organizer, depending on value
 	// of Index.
 	Private abstract.Scalar
@@ -49,10 +47,19 @@ type Config struct {
 	Public abstract.Point
 	// Address of the linked conode.
 	Address network.Address
-	// Final statement of the party.
-	Final *service.FinalStatement
+	// Map of Final statements of the parties.
+	// indexed by hash of party desciption
+	Parties map[string]*PartyConfig
 	// config-file name
 	name string
+}
+
+type PartyConfig struct {
+	// Index of the attendee in the final statement. If the index
+	// is -1, then this pop holds an organizer.
+	Index int
+	// Final statement of the party.
+	Final *service.FinalStatement
 }
 
 func main() {
@@ -141,22 +148,33 @@ func orgConfig(c *cli.Context) error {
 	log.ErrFatal(err, "While reading", pdFile)
 	_, err = toml.Decode(string(buf), desc)
 	log.ErrFatal(err, "While decoding", pdFile)
-	group := readGroup(c.Args().Get(1))
-	desc.Roster = group.Roster
-	log.Info("Hash of config is:", base64.StdEncoding.EncodeToString(desc.Hash()))
+	desc.Roster = readGroup(c.Args().Get(1))
+	hash := base64.StdEncoding.EncodeToString(desc.Hash())
+	log.Infof("Hash of config: %s", hash)
 	//log.ErrFatal(check.Servers(group), "Couldn't check servers")
 	log.ErrFatal(client.StoreConfig(cfg.Address, desc))
-	cfg.Final.Desc = desc
+	if val, ok := cfg.Parties[hash]; !ok {
+		cfg.Parties[hash] = &PartyConfig{
+			Index: -1,
+			Final: &service.FinalStatement{
+				Desc:      desc,
+				Attendees: []abstract.Point{},
+				Signature: []byte{},
+			},
+		}
+	} else {
+		val.Final.Desc = desc
+	}
 	cfg.write()
 	return nil
 }
 
 // adds a public key to the list
 func orgPublic(c *cli.Context) error {
-	log.Info("Org: Adding public keys", c.Args().First())
-	if c.NArg() < 1 {
-		log.Fatal("Please give a public key")
+	if c.NArg() < 2 {
+		log.Fatal("Please give a public key and hash of a party")
 	}
+	log.Info("Org: Adding public keys", c.Args().First())
 	str := c.Args().First()
 	if !strings.HasPrefix(str, "[") {
 		str = "[" + str + "]"
@@ -169,17 +187,19 @@ func orgPublic(c *cli.Context) error {
 	log.Info("Niceified public keys are:\n", str)
 	keys := strings.Split(str, ",")
 	cfg, _ := getConfigClient(c)
+	party, err := cfg.getPartybyHash(c.Args().Get(1))
+	log.ErrFatal(err)
 	for _, k := range keys {
 		pub, err := crypto.String64ToPub(network.Suite, k)
 		if err != nil {
 			log.Fatal("Couldn't parse public key:", k, err)
 		}
-		for _, p := range cfg.Final.Attendees {
+		for _, p := range party.Final.Attendees {
 			if p.Equal(pub) {
 				log.Fatal("This key already exists")
 			}
 		}
-		cfg.Final.Attendees = append(cfg.Final.Attendees, pub)
+		party.Final.Attendees = append(party.Final.Attendees, pub)
 	}
 	cfg.write()
 	return nil
@@ -189,23 +209,28 @@ func orgPublic(c *cli.Context) error {
 func orgFinal(c *cli.Context) error {
 	log.Info("Org: Final")
 	cfg, client := getConfigClient(c)
-	if len(cfg.Final.Attendees) == 0 {
-		log.Fatal("No attendees stored - first store at least one")
+	if len(cfg.Parties) == 0 {
+		log.Fatal("No configs stored - first store at least one")
+	}
+	if c.NArg() < 1 {
+		log.Fatal("Please give hash of pop-party")
 	}
 	if cfg.Address == "" {
 		log.Fatal("Not linked")
 	}
-	if len(cfg.Final.Signature) > 0 {
-		finst, err := cfg.Final.ToToml()
+	party, err := cfg.getPartybyHash(c.Args().First())
+	log.ErrFatal(err)
+	if len(party.Final.Signature) > 0 {
+		finst, err := party.Final.ToToml()
 		log.ErrFatal(err)
 		log.Info("Final statement already here:\n", "\n"+string(finst))
 		return nil
 	}
-	fs, cerr := client.Finalize(cfg.Address, cfg.Final.Desc, cfg.Final.Attendees)
+	fs, cerr := client.Finalize(cfg.Address, party.Final.Desc, party.Final.Attendees)
 	log.ErrFatal(cerr)
-	cfg.Final = fs
+	party.Final = fs
 	cfg.write()
-	finst, err := cfg.Final.ToToml()
+	finst, err := fs.ToToml()
 	log.ErrFatal(err)
 	log.Info("Created final statement:\n", "\n"+string(finst))
 	return nil
@@ -231,34 +256,29 @@ func clientCreate(c *cli.Context) error {
 func clientJoin(c *cli.Context) error {
 	log.Info("Client: join")
 	if c.NArg() < 2 {
-		log.Fatal("Please give final.toml and private key.")
+		log.Fatal("Please give private key and party-hash.")
 	}
-	finalName := c.Args().First()
-	privStr := c.Args().Get(1)
+	privStr := c.Args().First()
 	privBuf, err := base64.StdEncoding.DecodeString(privStr)
 	log.ErrFatal(err)
 	priv := network.Suite.Scalar()
 	log.ErrFatal(priv.UnmarshalBinary(privBuf))
-	buf, err := ioutil.ReadFile(finalName)
-	log.ErrFatal(err)
 	cfg, _ := getConfigClient(c)
-	cfg.Final, err = service.NewFinalStatementFromToml(buf)
+	party, err := cfg.getPartybyHash(c.Args().Get(1))
 	log.ErrFatal(err)
-	if cfg.Final == nil {
-		log.Fatal("Couldn't parse final statement")
-	}
 	cfg.Private = priv
 	cfg.Public = network.Suite.Point().Mul(nil, priv)
-	cfg.Index = -1
-	for i, p := range cfg.Final.Attendees {
+	index := -1
+	for i, p := range party.Final.Attendees {
 		if p.Equal(cfg.Public) {
 			log.Info("Found public key at index", i)
-			cfg.Index = i
+			index = i
 		}
 	}
-	if cfg.Index == -1 {
+	if index == -1 {
 		log.Fatal("Didn't find our public key in the final statement!")
 	}
+	party.Index = index
 	cfg.write()
 	log.Info("Stored new final statement and key.")
 	return nil
@@ -268,18 +288,19 @@ func clientJoin(c *cli.Context) error {
 func clientSign(c *cli.Context) error {
 	log.Info("Client: sign")
 	cfg, _ := getConfigClient(c)
-	if cfg.Index == -1 {
-		log.Fatal("No public key stored.")
-	}
 	if c.NArg() < 2 {
-		log.Fatal("Please give msg and context")
+		log.Fatal("Please give msg, context and party hash")
+	}
+	party, err := cfg.getPartybyHash(c.Args().Get(2))
+	log.ErrFatal(err)
+	if party.Index == -1 {
+		log.Fatal("No public key stored.")
 	}
 	msg := []byte(c.Args().First())
 	ctx := []byte(c.Args().Get(1))
-
-	Set := anon.Set(cfg.Final.Attendees)
+	Set := anon.Set(party.Final.Attendees)
 	sigtag := anon.Sign(network.Suite, random.Stream, msg,
-		Set, ctx, cfg.Index, cfg.Private)
+		Set, ctx, party.Index, cfg.Private)
 	sig := sigtag[:len(sigtag)-32]
 	tag := sigtag[len(sigtag)-32:]
 	log.Infof("\nSignature: %s\nTag: %s", base64.StdEncoding.EncodeToString(sig),
@@ -291,11 +312,13 @@ func clientSign(c *cli.Context) error {
 func clientVerify(c *cli.Context) error {
 	log.Info("Client: verify")
 	cfg, _ := getConfigClient(c)
-	if cfg.Index == -1 {
-		log.Fatal("No public key stored")
+	if c.NArg() < 5 {
+		log.Fatal("Please give a msg, context, signature, a tag and party hash")
 	}
-	if c.NArg() < 4 {
-		log.Fatal("Please give a msg, context, signature and a tag")
+	party, err := cfg.getPartybyHash(c.Args().Get(4))
+	log.ErrFatal(err)
+	if party.Index == -1 {
+		log.Fatal("No public key stored")
 	}
 	msg := []byte(c.Args().First())
 	ctx := []byte(c.Args().Get(1))
@@ -305,7 +328,7 @@ func clientVerify(c *cli.Context) error {
 	log.ErrFatal(err)
 	sigtag := append(sig, tag...)
 	ctag, err := anon.Verify(network.Suite, msg,
-		anon.Set(cfg.Final.Attendees), ctx, sigtag)
+		anon.Set(party.Final.Attendees), ctx, sigtag)
 	log.ErrFatal(err)
 	if !bytes.Equal(tag, ctag) {
 		log.Fatalf("Tag and calculated tag are not equal:\n%x - %x", tag, ctag)
@@ -330,12 +353,8 @@ func newConfig(fileConfig string) (*Config, error) {
 		return &Config{
 			Private: kp.Secret,
 			Public:  kp.Public,
-			Final: &service.FinalStatement{
-				Attendees: []abstract.Point{},
-				Signature: []byte{},
-			},
-			Index: -1,
-			name:  name,
+			Parties: make(map[string]*PartyConfig),
+			name:    name,
 		}, nil
 	}
 	buf, err := ioutil.ReadFile(name)
@@ -352,6 +371,9 @@ func newConfig(fileConfig string) (*Config, error) {
 	if !ok {
 		log.Fatal("Wrong data-structure in file", name)
 	}
+	if cfg.Parties == nil {
+		cfg.Parties = make(map[string]*PartyConfig)
+	}
 	cfg.name = name
 	return cfg, nil
 }
@@ -363,15 +385,23 @@ func (cfg *Config) write() {
 	log.ErrFatal(ioutil.WriteFile(cfg.name, buf, 0660))
 }
 
+func (cfg *Config) getPartybyHash(hash string) (*PartyConfig, error) {
+	if val, ok := cfg.Parties[hash]; ok {
+		return val, nil
+	} else {
+		return val, onet.NewClientErrorCode(service.ErrorInternal, "No such party")
+	}
+}
+
 // readGroup fetches group definition file.
-func readGroup(name string) *app.Group {
+func readGroup(name string) *onet.Roster {
 	f, err := os.Open(name)
 	log.ErrFatal(err, "Couldn't open group definition file")
-	group, err := app.ReadGroupDescToml(f)
+	roster, err := app.ReadGroupToml(f)
 	log.ErrFatal(err, "Error while reading group definition file", err)
-	if len(group.Roster.List) == 0 {
+	if len(roster.List) == 0 {
 		log.ErrFatalf(err, "Empty entity or invalid group defintion in: %s",
 			name)
 	}
-	return group
+	return roster
 }

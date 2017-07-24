@@ -26,7 +26,6 @@ attendee.
 */
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 
@@ -76,7 +75,7 @@ type saveData struct {
 	// Public key of linked pop
 	Public abstract.Point
 	// The final statement
-	Final *FinalStatement
+	Finals map[string]*FinalStatement
 }
 
 // PinRequest prints out a pin if none is given, else it verifies it has the
@@ -105,9 +104,10 @@ func (s *Service) StoreConfig(req *StoreConfig) (network.Message, onet.ClientErr
 	if s.data.Public == nil {
 		return nil, onet.NewClientErrorCode(ErrorInternal, "Not linked yet")
 	}
-	s.data.Final = &FinalStatement{Desc: req.Desc, Signature: []byte{}}
+	hash := req.Desc.Hash()
+	s.data.Finals[string(hash)] = &FinalStatement{Desc: req.Desc, Signature: []byte{}}
 	s.save()
-	return &StoreConfigReply{req.Desc.Hash()}, nil
+	return &StoreConfigReply{hash}, nil
 }
 
 // FinalizeRequest returns the FinalStatement if all conodes already received
@@ -118,19 +118,21 @@ func (s *Service) FinalizeRequest(req *FinalizeRequest) (network.Message, onet.C
 	if s.data.Public == nil {
 		return nil, onet.NewClientErrorCode(ErrorInternal, "Not linked yet")
 	}
-	if s.data.Final == nil || s.data.Final.Desc == nil {
+	var final *FinalStatement
+	var ok bool
+	if final, ok = s.data.Finals[string(req.DescID)]; !ok || final == nil || final.Desc == nil {
 		return nil, onet.NewClientErrorCode(ErrorInternal, "No config found")
 	}
-	if s.data.Final != nil && s.data.Final.Desc != nil && s.data.Final.Verify() == nil {
+	if final.Verify() == nil {
 		log.Lvl2("Sending known final statement")
-		return &FinalizeResponse{s.data.Final}, nil
+		return &FinalizeResponse{final}, nil
 	}
 
 	// Contact all other nodes and ask them if they already have a config.
-	s.data.Final.Attendees = make([]abstract.Point, len(req.Attendees))
-	copy(s.data.Final.Attendees, req.Attendees)
-	cc := &CheckConfig{s.data.Final.Desc.Hash(), req.Attendees}
-	for _, c := range s.data.Final.Desc.Roster.List {
+	final.Attendees = make([]abstract.Point, len(req.Attendees))
+	copy(final.Attendees, req.Attendees)
+	cc := &CheckConfig{final.Desc.Hash(), req.Attendees}
+	for _, c := range final.Desc.Roster.List {
 		if !c.ID.Equal(s.ServerIdentity().ID) {
 			log.Lvl3("Contacting", c, cc.Attendees)
 			err := s.SendRaw(c, cc)
@@ -146,7 +148,7 @@ func (s *Service) FinalizeRequest(req *FinalizeRequest) (network.Message, onet.C
 	}
 
 	// Create final signature
-	tree := s.data.Final.Desc.Roster.GenerateNaryTreeWithRoot(2, s.ServerIdentity())
+	tree := final.Desc.Roster.GenerateNaryTreeWithRoot(2, s.ServerIdentity())
 	node, err := s.CreateProtocol(cosi.Name, tree)
 	if err != nil {
 		return nil, onet.NewClientError(err)
@@ -156,21 +158,21 @@ func (s *Service) FinalizeRequest(req *FinalizeRequest) (network.Message, onet.C
 	c.RegisterSignatureHook(func(sig []byte) {
 		signature <- sig[:64]
 	})
-	c.Message, err = s.data.Final.Hash()
+	c.Message, err = final.Hash()
 	if err != nil {
 		return nil, onet.NewClientError(err)
 	}
 	go node.Start()
 
-	s.data.Final.Signature = <-signature
-	replies, err := s.Propagate(s.data.Final.Desc.Roster, s.data.Final, 10000)
+	final.Signature = <-signature
+	replies, err := s.Propagate(final.Desc.Roster, final, 10000)
 	if err != nil {
 		return nil, onet.NewClientError(err)
 	}
-	if replies != len(s.data.Final.Desc.Roster.List) {
+	if replies != len(final.Desc.Roster.List) {
 		log.Warn("Did only get", replies)
 	}
-	return &FinalizeResponse{s.data.Final}, nil
+	return &FinalizeResponse{final}, nil
 }
 
 // PropagateFinal saves the new final statement
@@ -184,9 +186,9 @@ func (s *Service) PropagateFinal(msg network.Message) {
 		log.Error(err)
 		return
 	}
-	s.data.Final = fs
+	s.data.Finals[string(fs.Desc.Hash())] = fs
 	s.save()
-	log.Lvlf3("%s Stored final statement %v", s.ServerIdentity(), s.data.Final)
+	log.Lvlf3("%s Stored final statement %v", s.ServerIdentity(), fs)
 }
 
 // CheckConfig receives a hash for a config and a list of attendees. It returns
@@ -201,16 +203,17 @@ func (s *Service) CheckConfig(req *network.Envelope) {
 	}
 
 	ccr := &CheckConfigReply{0, cc.PopHash, nil}
-	if s.data.Final != nil {
-		if !bytes.Equal(s.data.Final.Desc.Hash(), cc.PopHash) {
+	if len(s.data.Finals) > 0 {
+		var final *FinalStatement
+		if final, ok = s.data.Finals[string(cc.PopHash)]; !ok {
 			ccr.PopStatus = PopStatusWrongHash
 		} else {
-			s.intersectAttendees(cc.Attendees)
-			if len(s.data.Final.Attendees) == 0 {
+			final.intersectAttendees(cc.Attendees)
+			if len(final.Attendees) == 0 {
 				ccr.PopStatus = PopStatusNoAttendees
 			} else {
 				ccr.PopStatus = PopStatusOK
-				ccr.Attendees = s.data.Final.Attendees
+				ccr.Attendees = final.Attendees
 			}
 		}
 	}
@@ -231,15 +234,16 @@ func (s *Service) CheckConfigReply(req *network.Envelope) {
 			log.Errorf("Didn't get a CheckConfigReply: %v", req.Msg)
 			return nil
 		}
-		if !bytes.Equal(ccrVal.PopHash, s.data.Final.Desc.Hash()) {
-			log.Error("Not correct hash")
+		var final *FinalStatement
+		if final, ok = s.data.Finals[string(ccrVal.PopHash)]; !ok {
+			log.Error("No party with given hash")
 			return nil
 		}
 		if ccrVal.PopStatus < PopStatusOK {
 			log.Lvl1("Wrong pop-status:", ccrVal.PopStatus)
 			return nil
 		}
-		s.intersectAttendees(ccrVal.Attendees)
+		final.intersectAttendees(ccrVal.Attendees)
 		return ccrVal
 	}()
 	if len(s.ccChannel) == 0 {
@@ -248,18 +252,18 @@ func (s *Service) CheckConfigReply(req *network.Envelope) {
 }
 
 // Get intersection of attendees
-func (s *Service) intersectAttendees(atts []abstract.Point) {
+func (f *FinalStatement) intersectAttendees(atts []abstract.Point) {
 	na := []abstract.Point{}
-	for i, p := range s.data.Final.Attendees {
+	for i, p := range f.Attendees {
 		for _, d := range atts {
 			if p.Equal(d) {
 				na = append(na, p)
 				continue
 			}
 		}
-		s.data.Final.Attendees[i] = nil
+		f.Attendees[i] = nil
 	}
-	s.data.Final.Attendees = na
+	f.Attendees = na
 }
 
 // saves the actual identity
@@ -300,6 +304,9 @@ func newService(c *onet.Context) onet.Service {
 		"Couldn't register messages")
 	if err := s.tryLoad(); err != nil {
 		log.Error(err)
+	}
+	if s.data.Finals == nil {
+		s.data.Finals = make(map[string]*FinalStatement)
 	}
 	var err error
 	s.Propagate, err = messaging.NewPropagationFunc(c, "PoPPropagate", s.PropagateFinal)
