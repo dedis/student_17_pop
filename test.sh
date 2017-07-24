@@ -21,8 +21,6 @@ main(){
 	addr[2]=127.0.0.1:2004
 	addr[3]=127.0.0.1:2006
 
-
-
 	test Build
 	test Check
 	test OrgLink
@@ -37,7 +35,50 @@ main(){
 	test AtJoin
 	test AtSign
 	test AtVerify
+	test AtMultipleKey
 	stopTest
+}
+
+testAtMultipleKey(){
+	mkConfig 2 2 2 3
+	# att1.k1 - p1 att1.k2 - p2 att2 - p2
+	runCl 1 org public ${pub[1]} ${pop_hash[1]}
+	runCl 2 org public ${pub[1]} ${pop_hash[1]}
+
+	runCl 1 org public ${pub[2]} ${pop_hash[2]}
+	runCl 2 org public ${pub[2]} ${pop_hash[2]}
+
+	runCl 1 org public ${pub[3]} ${pop_hash[2]}
+	runCl 2 org public ${pub[3]} ${pop_hash[2]}
+
+	testOK runCl 1 attendee join ${priv[1]} ${pop_hash[1]}
+	testOK runCl 1 attendee join ${priv[2]} ${pop_hash[2]}
+	testOK runCl 2 attendee join ${priv[3]} ${pop_hash[2]}
+
+	runDbgCl 1 1 attendee sign msg1 ctx1 ${pop_hash[1]} > sign.toml
+	tag[1]=$( grep Tag: sign.toml | sed -e "s/.* //")
+	sig[1]=$( grep Signature: sign.toml | sed -e "s/.* //")
+
+
+	runDbgCl 1 1 attendee sign msg1 ctx1 ${pop_hash[2]} > sign.toml
+	tag[2]=$( grep Tag: sign.toml | sed -e "s/.* //")
+	sig[2]=$( grep Signature: sign.toml | sed -e "s/.* //")
+
+
+	runDbgCl 1 2 attendee sign msg1 ctx1 ${pop_hash[2]} > sign.toml
+	tag[3]=$( grep Tag: sign.toml | sed -e "s/.* //")
+	sig[3]=$( grep Signature: sign.toml | sed -e "s/.* //")
+
+	testOK runCl 1 attendee verify msg1 ctx1 ${sig[1]} ${tag[1]} ${pop_hash[1]}
+	testOK runCl 1 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} ${pop_hash[2]}
+	testOK runCl 2 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} ${pop_hash[2]}
+
+	testFail runCl 1 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} ${pop_hash[1]}
+	testFail runCl 1 attendee verify msg1 ctx1 ${sig[1]} ${tag[1]} ${pop_hash[2]}
+	testFail runCl 2 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} ${pop_hash[1]}
+	testFail runCl 2 attendee verify msg1 ctx1 ${sig[1]} ${tag[1]} ${pop_hash[1]}
+	testOK runCl 1 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} ${pop_hash[2]}
+	testOK runCl 2 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} ${pop_hash[2]}
 }
 
 testAtVerify(){
@@ -208,8 +249,6 @@ mkConfig(){
 		do
 			num_pc=$((($pc + $cl + 1) % $2 + 1))
 			runDbgCl 1 $cl org config pop_desc$num_pc.toml group$num_pc.toml > pop_hash
-			#echo "added $cl to $num_pc"
-			#cat group$num_pc.toml
 			pop_hash[$num_pc]=$(grep config: pop_hash | sed -e "s/.* //")
 		done
 	done

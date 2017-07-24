@@ -39,12 +39,8 @@ func init() {
 
 // Config represents either a manager or an attendee configuration.
 type Config struct {
-	// Private key of attendee or organizer, depending on value
-	// of Index.
-	Private abstract.Scalar
-	// Public key of attendee or organizer, depending on value of
-	// index.
-	Public abstract.Point
+	// Public key of org. Used for linking
+	OrgPublic abstract.Point
 	// Address of the linked conode.
 	Address network.Address
 	// Map of Final statements of the parties.
@@ -55,6 +51,12 @@ type Config struct {
 }
 
 type PartyConfig struct {
+	// Private key of attendee or organizer, depending on value
+	// of Index.
+	Private abstract.Scalar
+	// Public key of attendee or organizer, depending on value of
+	// index.
+	Public abstract.Point
 	// Index of the attendee in the final statement. If the index
 	// is -1, then this pop holds an organizer.
 	Index int
@@ -118,7 +120,7 @@ func orgLink(c *cli.Context) error {
 	}
 	addr := network.NewTCPAddress(fmt.Sprintf("%s:%s", addrs[0], port))
 	pin := c.Args().Get(1)
-	if err := client.PinRequest(addr, pin, cfg.Public); err != nil {
+	if err := client.PinRequest(addr, pin, cfg.OrgPublic); err != nil {
 		if err.ErrorCode() == service.ErrorWrongPIN && pin == "" {
 			log.Info("Please read PIN in server-log")
 			return nil
@@ -154,6 +156,7 @@ func orgConfig(c *cli.Context) error {
 	//log.ErrFatal(check.Servers(group), "Couldn't check servers")
 	log.ErrFatal(client.StoreConfig(cfg.Address, desc))
 	if val, ok := cfg.Parties[hash]; !ok {
+		kp := config.NewKeyPair(network.Suite)
 		cfg.Parties[hash] = &PartyConfig{
 			Index: -1,
 			Final: &service.FinalStatement{
@@ -161,6 +164,8 @@ func orgConfig(c *cli.Context) error {
 				Attendees: []abstract.Point{},
 				Signature: []byte{},
 			},
+			Public:  kp.Public,
+			Private: kp.Secret,
 		}
 	} else {
 		val.Final.Desc = desc
@@ -266,11 +271,11 @@ func clientJoin(c *cli.Context) error {
 	cfg, _ := getConfigClient(c)
 	party, err := cfg.getPartybyHash(c.Args().Get(1))
 	log.ErrFatal(err)
-	cfg.Private = priv
-	cfg.Public = network.Suite.Point().Mul(nil, priv)
+	party.Private = priv
+	party.Public = network.Suite.Point().Mul(nil, priv)
 	index := -1
 	for i, p := range party.Final.Attendees {
-		if p.Equal(cfg.Public) {
+		if p.Equal(party.Public) {
 			log.Info("Found public key at index", i)
 			index = i
 		}
@@ -293,14 +298,15 @@ func clientSign(c *cli.Context) error {
 	}
 	party, err := cfg.getPartybyHash(c.Args().Get(2))
 	log.ErrFatal(err)
-	if party.Index == -1 {
-		log.Fatal("No public key stored.")
+	if party.Index == -1 || party.Private == nil || party.Public == nil ||
+		!network.Suite.Point().Mul(nil, party.Private).Equal(party.Public) {
+		log.Fatal("No public key stored. Please join a party")
 	}
 	msg := []byte(c.Args().First())
 	ctx := []byte(c.Args().Get(1))
 	Set := anon.Set(party.Final.Attendees)
 	sigtag := anon.Sign(network.Suite, random.Stream, msg,
-		Set, ctx, party.Index, cfg.Private)
+		Set, ctx, party.Index, party.Private)
 	sig := sigtag[:len(sigtag)-32]
 	tag := sigtag[len(sigtag)-32:]
 	log.Infof("\nSignature: %s\nTag: %s", base64.StdEncoding.EncodeToString(sig),
@@ -317,9 +323,12 @@ func clientVerify(c *cli.Context) error {
 	}
 	party, err := cfg.getPartybyHash(c.Args().Get(4))
 	log.ErrFatal(err)
-	if party.Index == -1 {
-		log.Fatal("No public key stored")
+
+	if party.Index == -1 || party.Private == nil || party.Public == nil ||
+		!network.Suite.Point().Mul(nil, party.Private).Equal(party.Public) {
+		log.Fatal("No public key stored. Please join a party")
 	}
+
 	msg := []byte(c.Args().First())
 	ctx := []byte(c.Args().Get(1))
 	sig, err := base64.StdEncoding.DecodeString(c.Args().Get(2))
@@ -351,10 +360,9 @@ func newConfig(fileConfig string) (*Config, error) {
 	if _, err := os.Stat(name); err != nil {
 		kp := config.NewKeyPair(network.Suite)
 		return &Config{
-			Private: kp.Secret,
-			Public:  kp.Public,
-			Parties: make(map[string]*PartyConfig),
-			name:    name,
+			OrgPublic: kp.Public,
+			Parties:   make(map[string]*PartyConfig),
+			name:      name,
 		}, nil
 	}
 	buf, err := ioutil.ReadFile(name)
