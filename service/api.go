@@ -23,6 +23,9 @@ const (
 	// ErrorOtherFinals indicates that one or more of the other conodes
 	// are still missing the finalization-step
 	ErrorOtherFinals
+	// ErrorMerge indicates that other parties have not recieved
+	// the merge request yet
+	ErrorMerge
 )
 
 func init() {
@@ -60,6 +63,18 @@ func (c *Client) StoreConfig(dst network.Address, p *PopDesc) onet.ClientError {
 	return nil
 }
 
+// Send Request to update local final statement
+func (c *Client) FetchFinal(dst network.Address, hash []byte) (
+	*FinalStatement, onet.ClientError) {
+	si := &network.ServerIdentity{Address: dst}
+	res := &FinalizeResponse{}
+	err := c.SendProtobuf(si, &FetchRequest{hash}, res)
+	if err != nil {
+		return nil, err
+	}
+	return res.Final, nil
+}
+
 // Finalize takes the address of the conode-server, a pop-description and a
 // list of attendees public keys. It contacts the other conodes and checks
 // if they are available and already have a description. If so, all attendees
@@ -71,6 +86,17 @@ func (c *Client) Finalize(dst network.Address, p *PopDesc, attendees []abstract.
 	si := &network.ServerIdentity{Address: dst}
 	res := &FinalizeResponse{}
 	err := c.SendProtobuf(si, &FinalizeRequest{p.Hash(), attendees}, res)
+	if err != nil {
+		return nil, err
+	}
+	return res.Final, nil
+}
+
+func (c *Client) Merge(dst network.Address, p *PopDesc) (
+	*FinalStatement, onet.ClientError) {
+	si := &network.ServerIdentity{Address: dst}
+	res := &FinalizeResponse{}
+	err := c.SendProtobuf(si, &MergeRequest{p.Hash()}, res)
 	if err != nil {
 		return nil, err
 	}
@@ -120,11 +146,34 @@ func NewFinalStatementFromToml(b []byte) (*FinalStatement, error) {
 		})
 	}
 	rostr := onet.NewRoster(sis)
+	mrostrs := make([]*onet.Roster, len(fsToml.Desc.MergedRosters))
+	for i, roster := range fsToml.Desc.MergedRosters {
+		sis = sis[:0]
+		for _, s := range roster {
+			uid, err := uuid.FromString(s[2])
+			if err != nil {
+				return nil, err
+			}
+			pub, err := crypto.String64ToPub(network.Suite, s[3])
+			if err != nil {
+				return nil, err
+			}
+			sis = append(sis, &network.ServerIdentity{
+				Address:     network.Address(s[0]),
+				Description: s[1],
+				ID:          network.ServerIdentityID(uid),
+				Public:      pub,
+			})
+		}
+		mrostrs[i] = onet.NewRoster(sis)
+	}
+
 	desc := &PopDesc{
-		Name:     fsToml.Desc.Name,
-		DateTime: fsToml.Desc.DateTime,
-		Location: fsToml.Desc.Location,
-		Roster:   rostr,
+		Name:          fsToml.Desc.Name,
+		DateTime:      fsToml.Desc.DateTime,
+		Location:      fsToml.Desc.Location,
+		Roster:        rostr,
+		MergedRosters: mrostrs,
 	}
 	atts := []abstract.Point{}
 	for _, p := range fsToml.Attendees {
@@ -149,29 +198,35 @@ func NewFinalStatementFromToml(b []byte) (*FinalStatement, error) {
 
 // ToToml returns a toml-slice of byte and an eventual error.
 func (fs *FinalStatement) ToToml() ([]byte, error) {
-	rostr := [][]string{}
-	for _, si := range fs.Desc.Roster.List {
-		str, err := crypto.PubToString64(nil, si.Public)
-		if err != nil {
-			return nil, err
+	rostr, err := toToml(fs.Desc.Roster)
+	if err != nil {
+		return nil, err
+	}
+	mrostrs := make([][][]string, len(fs.Desc.MergedRosters))
+	if len(fs.Desc.MergedRosters) > 0 {
+		for i, roster := range fs.Desc.MergedRosters {
+			rostr, err := toToml(roster)
+			if err != nil {
+				return nil, err
+			}
+			mrostrs[i] = rostr
 		}
-		sistr := []string{si.Address.String(), si.Description,
-			uuid.UUID(si.ID).String(), str}
-		rostr = append(rostr, sistr)
 	}
 	descToml := &popDescToml{
-		Name:     fs.Desc.Name,
-		DateTime: fs.Desc.DateTime,
-		Location: fs.Desc.Location,
-		Roster:   rostr,
+		Name:          fs.Desc.Name,
+		DateTime:      fs.Desc.DateTime,
+		Location:      fs.Desc.Location,
+		Roster:        rostr,
+		MergedRosters: mrostrs,
 	}
-	atts := []string{}
-	for _, p := range fs.Attendees {
+
+	atts := make([]string, len(fs.Attendees))
+	for i, p := range fs.Attendees {
 		str, err := crypto.PubToString64(nil, p)
 		if err != nil {
 			return nil, err
 		}
-		atts = append(atts, str)
+		atts[i] = str
 	}
 	fsToml := &finalStatementToml{
 		Desc:      descToml,
@@ -179,7 +234,7 @@ func (fs *FinalStatement) ToToml() ([]byte, error) {
 		Signature: base64.StdEncoding.EncodeToString(fs.Signature),
 	}
 	var buf bytes.Buffer
-	err := toml.NewEncoder(&buf).Encode(fsToml)
+	err = toml.NewEncoder(&buf).Encode(fsToml)
 	if err != nil {
 		return nil, err
 	}
@@ -228,14 +283,17 @@ type PopDesc struct {
 	Location string
 	// Roster of all responsible conodes for that party.
 	Roster *onet.Roster
+	// Rosters of parties to be merged
+	MergedRosters []*onet.Roster
 }
 
 // represents a PopDesc in string-version for toml.
 type popDescToml struct {
-	Name     string
-	DateTime string
-	Location string
-	Roster   [][]string
+	Name          string
+	DateTime      string
+	Location      string
+	Roster        [][]string
+	MergedRosters [][][]string
 }
 
 // Hash of this structure - calculated by hand instead of using network.Marshal.
@@ -249,6 +307,49 @@ func (p *PopDesc) Hash() []byte {
 		log.Error(err)
 		return []byte{}
 	}
-	hash.Write([]byte(buf))
+	hash.Write(buf)
+	if len(p.MergedRosters) > 0 {
+		for _, roster := range p.MergedRosters {
+			buf, err = roster.Aggregate.MarshalBinary()
+			if err != nil {
+				log.Error(err)
+				return []byte{}
+			}
+			hash.Write(buf)
+		}
+	}
 	return hash.Sum(nil)
+}
+
+// Checks if the first list contains the second
+func Equal(r1, r2 *onet.Roster) bool {
+	if len(r1.List) != len(r2.List) {
+		return false
+	}
+	for _, p := range r2.List {
+		found := false
+		for _, d := range r1.List {
+			if p.Equal(d) {
+				found = true
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func toToml(r *onet.Roster) ([][]string, error) {
+	rostr := make([][]string, len(r.List))
+	for i, si := range r.List {
+		str, err := crypto.PubToString64(nil, si.Public)
+		if err != nil {
+			return nil, err
+		}
+		sistr := []string{si.Address.String(), si.Description,
+			uuid.UUID(si.ID).String(), str}
+		rostr[i] = sistr
+	}
+	return rostr, nil
 }

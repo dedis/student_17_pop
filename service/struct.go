@@ -13,7 +13,7 @@ import (
 func init() {
 	for _, msg := range []interface{}{
 		CheckConfig{}, CheckConfigReply{},
-		PinRequest{},
+		PinRequest{}, FetchRequest{}, MergeRequest{},
 	} {
 		network.RegisterMessage(msg)
 	}
@@ -24,6 +24,10 @@ const (
 	PopStatusWrongHash = iota
 	// PopStatusNoAttendees - No common attendees found
 	PopStatusNoAttendees
+	// PopStatusMergeError - Error in merge config
+	PopStatusMergeError
+	// PopStatusMergeNonFinalized - Attempt to merge not finalized party
+	PopStatusMergeNonFinalized
 	// PopStatusOK - Everything is OK
 	PopStatusOK
 )
@@ -42,6 +46,24 @@ type CheckConfigReply struct {
 	PopStatus int
 	PopHash   []byte
 	Attendees []abstract.Point
+}
+
+// MergeConfig asks if party is ready to merge
+// TODO: Can be reduced to PopDesc, Signature and hash
+type MergeConfig struct {
+	// FinalStatement of current party
+	Final *FinalStatement
+	// Hash of PopDesc party to merge with
+	ID []byte
+}
+
+type MergeConfigReply struct {
+	// status of merging process
+	PopStatus int
+	// hash of party was asking to merge
+	PopHash []byte
+	// FinalStatement of party was asked to merge
+	Final *FinalStatement
 }
 
 // PinRequest will print a random pin on stdout if the pin is empty. If
@@ -77,4 +99,14 @@ type FinalizeRequest struct {
 // pruned attendees-public-key-list and the collective signature.
 type FinalizeResponse struct {
 	Final *FinalStatement
+}
+
+// FetchRequest asks to get FinalStatement
+type FetchRequest struct {
+	ID []byte
+}
+
+// MergeRequest asks to start merging process for given Party
+type MergeRequest struct {
+	ID []byte
 }

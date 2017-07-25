@@ -51,6 +51,12 @@ testAtMultipleKey(){
 	runCl 1 org public ${pub[3]} ${pop_hash[2]}
 	runCl 2 org public ${pub[3]} ${pop_hash[2]}
 
+	runCl 1 org final  ${pop_hash[1]}
+	runCl 2 org final  ${pop_hash[1]}
+	runCl 1 org final  ${pop_hash[2]}
+	runCl 2 org final  ${pop_hash[2]}
+
+
 	testOK runCl 1 attendee join ${priv[1]} ${pop_hash[1]}
 	testOK runCl 1 attendee join ${priv[2]} ${pop_hash[2]}
 	testOK runCl 2 attendee join ${priv[3]} ${pop_hash[2]}
@@ -111,7 +117,11 @@ mkClSign(){
 }
 
 testAtSign(){
-	mkAtJoin
+	mkFinal
+	testFail runCl 1 attendee sign msg1 ctx1 ${pop_hash[1]}
+	for i in {1..3}; do
+		runCl $i attendee join ${priv[$i]} ${pop_hash[$i]}
+	done
 	testFail runCl 1 attendee sign
 	testFail runCl 1 attendee sign msg1 ctx1 ${pop_hash[2]}
 	testOK runCl 1 attendee sign msg1 ctx1 ${pop_hash[1]}
@@ -127,7 +137,29 @@ mkAtJoin(){
 }
 
 testAtJoin(){
-	mkFinal
+	mkConfig 3 3 2 3
+
+	# att1 - p1, p2; att2 - p2; att3 - p3;
+	runCl 1 org public ${pub[1]} ${pop_hash[1]}
+	runCl 3 org public ${pub[1]} ${pop_hash[1]}
+	runCl 1 org public ${pub[2]} ${pop_hash[2]}
+	runCl 2 org public ${pub[2]} ${pop_hash[2]}
+	runCl 2 org public ${pub[3]} ${pop_hash[3]}
+	runCl 3 org public ${pub[3]} ${pop_hash[3]}
+
+	runCl 1 org public ${pub[1]} ${pop_hash[2]}
+	runCl 2 org public ${pub[1]} ${pop_hash[2]}
+
+	# check that fails without finalization
+	testFail runCl 1 attendee join ${priv[1]} ${pop_hash[1]}
+
+	runCl 1 org final  ${pop_hash[1]}
+	runCl 3 org final  ${pop_hash[1]}
+	runCl 1 org final  ${pop_hash[2]}
+	runCl 2 org final  ${pop_hash[2]}
+	runCl 2 org final  ${pop_hash[3]}
+	runCl 3 org final  ${pop_hash[3]}
+
 	testFail runCl 1 attendee join
 	testFail runCl 1 attendee join ${priv[1]}
 	testFail runCl 1 attendee join badkey ${pop_hash[1]}
@@ -248,7 +280,8 @@ mkConfig(){
 		for (( pc=1; pc<=$3; pc++ ))
 		do
 			num_pc=$((($pc + $cl + 1) % $2 + 1))
-			runDbgCl 1 $cl org config pop_desc$num_pc.toml group$num_pc.toml > pop_hash
+			#runDbgCl 1 $cl org config pop_desc$num_pc.toml group$num_pc.toml > pop_hash
+			runDbgCl 1 $cl org config pop_desc$num_pc.toml | tee pop_hash
 			pop_hash[$num_pc]=$(grep config: pop_hash | sed -e "s/.* //")
 		done
 	done
@@ -276,10 +309,10 @@ mkKeypair(){
 
 testOrgConfig(){
 	mkPopConfig 1 1
-	testFail runCl 1 org config pop_desc1.toml group1.toml
+	testFail runCl 1 org config pop_desc1.toml
 	mkLink 2
-	testOK runCl 1 org config pop_desc1.toml group1.toml
-	testOK runCl 2 org config pop_desc1.toml group1.toml
+	testOK runCl 1 org config pop_desc1.toml
+	testOK runCl 2 org config pop_desc1.toml
 }
 
 # $1 number of parties $2 number of organizers
@@ -292,9 +325,17 @@ Name = "33c3 Proof-of-Personhood Party$n"
 DateTime = "2016-12-29 15:00 UTC"
 Location = "Earth, Germany, City$1, Hall A1"
 EOF
-	sed -n "$((4*$n-3)),$((4*$n))p" public.toml > group$(($n%$1+1)).toml
-	local m=$(($n%$2 + 1))
-	sed -n "$((4*$m-3)),$((4*$m))p" public.toml >> group$(($n%$1+1)).toml
+	done
+	for (( n=1; n<=$1; n++ ))
+	do
+		#sed -n "$((4*$n-3)),$((4*$n))p" public.toml > group$(($n%$1+1)).toml
+		sed -n "$((4*$n-3)),$((4*$n))p" public.toml >> pop_desc$(($n%$1+1)).toml
+		if [[ $2 -gt 1 ]]
+		then
+			local m=$(($n%$2 + 1))
+			#sed -n "$((4*$m-3)),$((4*$m))p" public.toml >> group$(($n%$1+1)).toml
+			sed -n "$((4*$m-3)),$((4*$m))p" public.toml >> pop_desc$(($n%$1+1)).toml
+		fi
 	done
 }
 
@@ -302,12 +343,12 @@ testSave(){
 	runCoBG 1 2
 	mkPopConfig 1 2
 
-	testFail runCl 1 org config pop_desc1.toml group1.toml
+	testFail runCl 1 org config pop_desc1.toml
 	pkill -9 -f conode
 	mkLink 2
 	pkill -9 -f conode
 	runCoBG 1 2
-	testOK runCl 1 org config pop_desc1.toml group1.toml
+	testOK runCl 1 org config pop_desc1.toml
 }
 
 mkLink(){

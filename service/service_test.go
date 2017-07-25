@@ -78,7 +78,6 @@ func TestService_CheckConfig(t *testing.T) {
 			copy(s.data.Finals[hash].Attendees, atts)
 		}
 	}
-
 	cc := &CheckConfig{[]byte{}, atts}
 	srvcs[0].SendRaw(r.List[1], cc)
 	require.Nil(t, <-srvcs[0].ccChannel)
@@ -123,7 +122,7 @@ func TestService_CheckConfigReply(t *testing.T) {
 		<-s0.ccChannel
 		require.Equal(t, 2, len(s0.data.Finals[hash].Attendees))
 
-		ccr.PopStatus = 3
+		ccr.PopStatus = PopStatusOK + 1
 		req.Msg = ccr
 		s0.CheckConfigReply(req)
 		<-s0.ccChannel
@@ -172,12 +171,101 @@ func TestService_FinalizeRequest(t *testing.T) {
 	}
 }
 
+func TestService_FetchFinal(t *testing.T) {
+	local := onet.NewTCPTest()
+	defer local.CloseAll()
+	nbrNodes := 2
+	nbrAtt := 1
+	ndescs := 2
+	nodes, r, _ := local.GenTree(nbrNodes, true)
+
+	// Get all service-instances
+	descs, atts, services := storeDesc(local.GetServices(nodes, serviceID), r, nbrAtt, ndescs)
+	for _, desc := range descs {
+		descHash := desc.Hash()
+		_, err := services[0].FinalizeRequest(&FinalizeRequest{descHash, atts})
+		require.NotNil(t, err)
+		msg, err := services[1].FinalizeRequest(&FinalizeRequest{descHash, atts})
+		require.Nil(t, err)
+		require.NotNil(t, msg)
+		_, ok := msg.(*FinalizeResponse)
+		require.True(t, ok)
+	}
+	for _, desc := range descs {
+		// Fetch final
+		descHash := desc.Hash()
+		for _, s := range services {
+			msg, err := s.FetchFinal(&FetchRequest{descHash})
+			require.Nil(t, err)
+			require.NotNil(t, msg)
+			resp, ok := msg.(*FinalizeResponse)
+			require.True(t, ok)
+			final := resp.Final
+			require.NotNil(t, final)
+			require.Equal(t, final.Desc.Hash(), descHash)
+			require.Nil(t, final.Verify())
+		}
+	}
+}
+
+func TestService_MergeConfig(t *testing.T) {
+	local := onet.NewTCPTest()
+	defer local.CloseAll()
+	nbrNodes := 2
+	nbrAtt := 3
+	ndescs := 2
+	nodes, r, _ := local.GenTree(nbrNodes, true)
+	descs, atts, services := storeDesc(local.GetServices(nodes, serviceID), r, nbrAtt, ndescs)
+
+	hash := string(descs[0].Hash())
+	cc := &MergeConfig{services[0].data.Finals[hash], []byte{}}
+	srvcs[0].SendRaw(r.List[1], cc)
+	require.Nil(t, <-srvcs[0].mcChannel)
+
+	cc.ID = descs[1].Hash
+	srvcs[0].SendRaw(r.List[1], cc)
+	require.Nil(t, <-srvcs[0].mcChannel)
+	// finish parties
+	for _, desc := range descs {
+		descHash := desc.Hash()
+		_, err := services[0].FinalizeRequest(&FinalizeRequest{descHash, atts[:2]})
+		require.NotNil(t, err)
+		msg, err := services[1].FinalizeRequest(&FinalizeRequest{descHash, atts[1:]})
+		require.Nil(t, err)
+		require.NotNil(t, msg)
+		_, ok := msg.(*FinalizeResponse)
+		require.True(t, ok)
+	}
+
+	srvcs[0].SendRaw(r.List[1], cc)
+	require.NotNil(t, <-srvcs[0].ccChannel)
+	require.Equal(t, nbrAtt, len(srvcs[0].data.Finals[hash].Attendees))
+
+	hash = string(descs[1].Hash())
+	cc := &MergeConfig{services[1].data.Finals[hash], []byte{}}
+
+}
+
+func TestService_CheckConfigReply(t *testing.T) {
+
+}
+
+func TestService_MergeRequest(t *testing.T) {
+	local := onet.NewTCPTest()
+	defer local.CloseAll()
+	nbrNodes := 3
+	nbrAtt := 3
+	ndescs := 2
+	nodes, r, _ := local.GenTree(nbrNodes, true)
+
+}
+
 func storeDesc(srvcs []onet.Service, el *onet.Roster, nbr int, nprts int) ([]*PopDesc, []abstract.Point, []*Service) {
 	descs := make([]*PopDesc, nprts)
 	for i := range descs {
 		descs[i] = &PopDesc{
 			Name:     "test" + string(i),
-			DateTime: "tomorrow",
+			DateTime: "2017-07-31 00:00",
 			Roster:   onet.NewRoster(el.List),
 		}
 	}
