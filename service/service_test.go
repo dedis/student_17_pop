@@ -9,6 +9,10 @@ import (
 	"gopkg.in/dedis/onet.v1"
 	"gopkg.in/dedis/onet.v1/log"
 	"gopkg.in/dedis/onet.v1/network"
+
+	"encoding/base64"
+	"fmt"
+	"time"
 )
 
 var serviceID onet.ServiceID
@@ -211,52 +215,137 @@ func TestService_FetchFinal(t *testing.T) {
 func TestService_MergeConfig(t *testing.T) {
 	local := onet.NewTCPTest()
 	defer local.CloseAll()
-	nbrNodes := 2
-	nbrAtt := 3
-	ndescs := 2
+	nbrNodes := 4
+	nbrAtt := 4
 	nodes, r, _ := local.GenTree(nbrNodes, true)
-	descs, atts, services := storeDesc(local.GetServices(nodes, serviceID), r, nbrAtt, ndescs)
 
-	hash := string(descs[0].Hash())
-	cc := &MergeConfig{services[0].data.Finals[hash], []byte{}}
+	descs, atts, srvcs := storeDescMerge(local.GetServices(nodes, serviceID), r, nbrAtt)
+	hash := make([]string, nbrNodes/2)
+	hash[0] = string(descs[0].Hash())
+	hash[1] = string(descs[1].Hash())
+	cc := &MergeConfig{srvcs[0].data.Finals[hash[0]], []byte{}}
 	srvcs[0].SendRaw(r.List[1], cc)
 	require.Nil(t, <-srvcs[0].mcChannel)
+	srvcs[0].mcChannel <- nil
 
-	cc.ID = descs[1].Hash
-	srvcs[0].SendRaw(r.List[1], cc)
-	require.Nil(t, <-srvcs[0].mcChannel)
+	require.Equal(t, nbrAtt, len(atts))
+
+	cc.ID = []byte(hash[1])
+	srvcs[0].SendRaw(r.List[2], cc)
+	rsp := <-srvcs[0].mcChannel
+	require.Nil(t, rsp)
+	srvcs[0].mcChannel <- nil
 	// finish parties
-	for _, desc := range descs {
+	for i, desc := range descs {
 		descHash := desc.Hash()
-		_, err := services[0].FinalizeRequest(&FinalizeRequest{descHash, atts[:2]})
+		_, err := srvcs[2*i].FinalizeRequest(&FinalizeRequest{descHash,
+			atts[2*i : 2*i+2]})
 		require.NotNil(t, err)
-		msg, err := services[1].FinalizeRequest(&FinalizeRequest{descHash, atts[1:]})
+		msg, err := srvcs[2*i+1].FinalizeRequest(&FinalizeRequest{descHash,
+			atts[2*i : 2*i+2]})
 		require.Nil(t, err)
 		require.NotNil(t, msg)
 		_, ok := msg.(*FinalizeResponse)
 		require.True(t, ok)
 	}
 
-	srvcs[0].SendRaw(r.List[1], cc)
-	require.NotNil(t, <-srvcs[0].ccChannel)
-	require.Equal(t, nbrAtt, len(srvcs[0].data.Finals[hash].Attendees))
+	//log.SetDebugVisible(3)
+	log.Info("Group 1, Server:", srvcs[0].ServerIdentity())
+	log.Info("Group 1, Server:", srvcs[1].ServerIdentity())
+	log.Info("Group 2, Server:", srvcs[2].ServerIdentity())
+	log.Info("Group 2, Server:", srvcs[3].ServerIdentity())
 
-	hash = string(descs[1].Hash())
-	cc := &MergeConfig{services[1].data.Finals[hash], []byte{}}
+	cc.ID = []byte(hash[1])
+	srvcs[0].SendRaw(r.List[2], cc)
 
-}
+	for i, s := range srvcs {
+		mergeMeta := s.data.MergeMetas[hash[i/2]]
+		Eventually(t, func() bool { return len(mergeMeta.servicesSet) == 0 },
+			fmt.Sprintf("Server %d servicesSet"))
+		Eventually(t, func() bool { return len(descs) == len(mergeMeta.statementsMap) },
+			fmt.Sprintf("Server %d statementsMap", i))
+	}
 
-func TestService_CheckConfigReply(t *testing.T) {
-
+	for i, s := range srvcs {
+		// first server won't merge because it started process via MergeConfig
+		// not MergeRequest
+		if i < 1 {
+			continue
+		}
+		Eventually(t,
+			func() bool {
+				return (nbrAtt == len(s.data.Finals[hash[i/2]].Attendees))
+			},
+			fmt.Sprintf("Server %d attendees not merged", i))
+		Eventually(t,
+			func() bool {
+				return nbrNodes == len(s.data.Finals[hash[i/2]].Desc.Roster.List)
+			},
+			fmt.Sprintf("Server %d conodes not merged", i))
+	}
+	for i, s := range srvcs {
+		if i < 1 {
+			continue
+		}
+		Eventually(t,
+			func() bool {
+				return len(s.data.Finals[hash[i/2]].Signature) > 0 &&
+					s.data.Finals[hash[i/2]].Verify() == nil
+			},
+			fmt.Sprintf("Signature in node %d is created", i))
+	}
 }
 
 func TestService_MergeRequest(t *testing.T) {
 	local := onet.NewTCPTest()
 	defer local.CloseAll()
-	nbrNodes := 3
-	nbrAtt := 3
-	ndescs := 2
+	nbrNodes := 4
+	nbrAtt := 4
 	nodes, r, _ := local.GenTree(nbrNodes, true)
+	descs, atts, srvcs := storeDescMerge(local.GetServices(nodes, serviceID), r, nbrAtt)
+	hash := make([]string, nbrNodes/2)
+	hash[0] = string(descs[0].Hash())
+	hash[1] = string(descs[1].Hash())
+
+	log.SetDebugVisible(2)
+	// Wrong party check
+	mr := &MergeRequest{[]byte(hash[1])}
+	srvcs[0].MergeRequest(mr)
+	require.Nil(t, <-srvcs[0].mcChannel)
+
+	require.Equal(t, nbrAtt, len(atts))
+
+	// Not finished
+	mr.ID = []byte(hash[0])
+	srvcs[0].MergeRequest(mr)
+	require.Nil(t, <-srvcs[0].mcChannel)
+
+	// finish parties
+	for i, desc := range descs {
+		descHash := desc.Hash()
+		_, err := srvcs[2*i].FinalizeRequest(&FinalizeRequest{descHash,
+			atts[2*i : 2*i+2]})
+		require.NotNil(t, err)
+		msg, err := srvcs[2*i+1].FinalizeRequest(&FinalizeRequest{descHash,
+			atts[2*i : 2*i+2]})
+		require.Nil(t, err)
+		require.NotNil(t, msg)
+		_, ok := msg.(*FinalizeResponse)
+		require.True(t, ok)
+	}
+
+	log.Lvlf2("Group 1, Server: %s", srvcs[0].ServerIdentity())
+	log.Lvlf2("Group 1, Server: %s", srvcs[1].ServerIdentity())
+	log.Lvlf2("Group 2, Server: %s", srvcs[2].ServerIdentity())
+	log.Lvlf2("Group 2, Server: %s", srvcs[3].ServerIdentity())
+	mr.ID = []byte(hash[1])
+	srvcs[0].MergeRequest(mr)
+	require.NotNil(t, <-srvcs[0].mcChannel)
+	for i, s := range srvcs {
+		Eventually(t,
+			func() bool { return nbrAtt == len(s.data.Finals[hash[i/2]].Attendees) },
+			fmt.Sprintf("Server %d not merged", i))
+	}
 
 }
 
@@ -266,6 +355,7 @@ func storeDesc(srvcs []onet.Service, el *onet.Roster, nbr int, nprts int) ([]*Po
 		descs[i] = &PopDesc{
 			Name:     "test" + string(i),
 			DateTime: "2017-07-31 00:00",
+			Location: "city" + string(i),
 			Roster:   onet.NewRoster(el.List),
 		}
 	}
@@ -283,4 +373,63 @@ func storeDesc(srvcs []onet.Service, el *onet.Roster, nbr int, nprts int) ([]*Po
 		}
 	}
 	return descs, atts, sret
+}
+
+// Number of parties is assumed number of nodes / 2.
+// Number of nodes is assumed to be even
+func storeDescMerge(srvcs []onet.Service, el *onet.Roster, nbr int) ([]*PopDesc, []abstract.Point, []*Service) {
+	rosters := make([]*onet.Roster, len(el.List)/2)
+	for i := 0; i < len(el.List); i += 2 {
+		rosters[i/2] = onet.NewRoster(el.List[i : i+2])
+	}
+	descs := make([]*PopDesc, len(rosters))
+	copy_descs := make([]*ShortDesc, len(rosters))
+	for i := range descs {
+		descs[i] = &PopDesc{
+			Name:     "name",
+			DateTime: "2017-07-31 00:00",
+			Location: fmt.Sprintf("city%d", i),
+			Roster:   rosters[i],
+		}
+		copy_descs[i] = &ShortDesc{
+			Location: fmt.Sprintf("city%d", i),
+			Roster:   rosters[i],
+		}
+	}
+
+	for _, desc := range descs {
+		desc.Parties = copy_descs
+	}
+	atts := make([]abstract.Point, nbr)
+	for i := range atts {
+		kp := config.NewKeyPair(network.Suite)
+		atts[i] = kp.Public
+	}
+	sret := []*Service{}
+	for i, s := range srvcs {
+		sret = append(sret, s.(*Service))
+		s.(*Service).data.Public = network.Suite.Point().Null()
+		desc := descs[i/2]
+		s.(*Service).StoreConfig(&StoreConfig{desc})
+	}
+	for i, desc := range descs {
+		desc.Parties = copy_descs
+		log.Infof("Party %d Hash: %s", i, base64.StdEncoding.EncodeToString(desc.Hash()))
+		str, _ := desc.toToml()
+		log.Info("Desc", str)
+	}
+	return descs, atts, sret
+}
+
+const MAX_WAITING = 1000
+
+func Eventually(t *testing.T, f func() bool, msg string) {
+	ticks := 0
+	for ; !f() && ticks < MAX_WAITING; ticks++ {
+		time.Sleep(time.Millisecond)
+	}
+	if ticks >= MAX_WAITING {
+		require.Fail(t, "Timeout on waiting: "+msg)
+	}
+	require.True(t, f(), msg)
 }

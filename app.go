@@ -157,13 +157,13 @@ func orgConfig(c *cli.Context) error {
 		mergeFile := c.Args().Get(1)
 		buf, err = ioutil.ReadFile(mergeFile)
 		log.ErrFatal(err, "While reading", mergeFile)
-		err = decodeGroups(string(buf), desc.MergedRosters)
+		err = decodeGroups(string(buf), desc.Parties)
 		log.ErrFatal(err, "While decoding", mergeFile)
 
 		// Check that current party is included in merge config
 		found := false
-		for _, r := range desc.MergedRosters {
-			if service.Equal(desc.Roster, r) {
+		for _, party := range desc.Parties {
+			if service.Equal(desc.Roster, party.Roster) {
 				found = true
 				break
 			}
@@ -286,7 +286,7 @@ func orgMerge(c *cli.Context) error {
 		party.Final = fs
 	}
 
-	if len(party.Final.Desc.MergedRosters) <= 0 {
+	if len(party.Final.Desc.Parties) <= 0 {
 		log.Fatal("there is no parties to merge")
 	}
 
@@ -527,23 +527,27 @@ func decodePopDesc(buf string, desc *service.PopDesc) error {
 }
 
 // decode config of several groups into array of rosters
-func decodeGroups(buf string, rosters []*onet.Roster) error {
-	groups := []app.GroupToml{}
+func decodeGroups(buf string, descs []*service.PopDesc) error {
+	groups := []PopDescGroupToml{}
 	_, err := toml.Decode(buf, groups)
 	if err != nil {
 		return err
 	}
-	rosters = make([]*onet.Roster, len(groups))
-	for i, group := range groups {
-		entities := make([]*network.ServerIdentity, len(group.Servers))
-		for j, s := range group.Servers {
+	descs = make([]*service.PopDesc, len(groups))
+	for i, desc := range descs {
+		descGroup := groups[i]
+		desc.Name = descGroup.Name
+		desc.DateTime = descGroup.DateTime
+		desc.Location = descGroup.Location
+		entities := make([]*network.ServerIdentity, len(descGroup.Servers))
+		for i, s := range descGroup.Servers {
 			en, err := toServerIdentity(s, network.Suite)
 			if err != nil {
 				return err
 			}
-			entities[j] = en
+			entities[i] = en
 		}
-		rosters[i] = onet.NewRoster(entities)
+		desc.Roster = onet.NewRoster(entities)
 	}
 	return nil
 }

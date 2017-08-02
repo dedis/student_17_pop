@@ -26,9 +26,9 @@ attendee.
 */
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
-
 	"math/big"
 
 	"gopkg.in/dedis/cothority.v1/cosi/protocol"
@@ -80,22 +80,29 @@ type saveData struct {
 	Pin string
 	// Public key of linked pop
 	Public abstract.Point
-	// The final statement
+	// The final statements
 	Finals map[string]*FinalStatement
-	// The set of parties, that were merged
-	// Used here to track the merged parties
-	MergeSets map[string]*MergeSet
+	// The meta info used in merge process
+	MergeMetas map[string]*MergeMeta
 }
 
-// Set of final statemes of parties that are going to be merged together
-type MergeSet struct {
-	Set map[string]*FinalStatement
+type MergeMeta struct {
+	// Map of final statements of parties that are going to be merged together
+	statementsMap map[string]*FinalStatement
+	// Set of nodes need to talk with
+	// Initialized as all false - not connected
+	// On MergeReplies set as true
+	servicesSet map[string]bool
+	// Flag tells that message distribution has already started
+	distrib bool
 }
 
-func newMergeSet() *MergeSet {
-	ms := &MergeSet{}
-	ms.Set = make(map[string]*FinalStatement)
-	return ms
+func newMergeMeta() *MergeMeta {
+	mm := &MergeMeta{}
+	mm.statementsMap = make(map[string]*FinalStatement)
+	mm.servicesSet = make(map[string]bool)
+	mm.distrib = false
+	return mm
 }
 
 // PinRequest prints out a pin if none is given, else it verifies it has the
@@ -118,7 +125,7 @@ func (s *Service) PinRequest(req *PinRequest) (network.Message, onet.ClientError
 
 // StoreConfig saves the pop-config locally
 func (s *Service) StoreConfig(req *StoreConfig) (network.Message, onet.ClientError) {
-	log.Lvlf3("StoreConfig: %s %v %x", s.Context.ServerIdentity(), req.Desc, req.Desc.Hash())
+	log.Lvlf2("StoreConfig: %s %v %x", s.Context.ServerIdentity(), req.Desc, req.Desc.Hash())
 	if req.Desc.Roster == nil {
 		return nil, onet.NewClientErrorCode(ErrorInternal, "no roster set")
 	}
@@ -127,12 +134,20 @@ func (s *Service) StoreConfig(req *StoreConfig) (network.Message, onet.ClientErr
 	}
 	hash := req.Desc.Hash()
 	s.data.Finals[string(hash)] = &FinalStatement{Desc: req.Desc, Signature: []byte{}}
-	if len(req.Desc.MergedRosters) > 0 {
-		mergeSet := newMergeSet()
-		s.data.MergeSets[string(hash)] = mergeSet
+	if len(req.Desc.Parties) > 0 {
+		mergeMeta := newMergeMeta()
+		s.data.MergeMetas[string(hash)] = mergeMeta
 		// party is merged with itself already
-		mergeSet.Set[string(hash)] = s.data.Finals[string(hash)]
+		mergeMeta.statementsMap[string(hash)] = s.data.Finals[string(hash)]
 
+		// initialize al nodes as not connected
+		for _, party := range req.Desc.Parties {
+			if !Equal(party.Roster, req.Desc.Roster) {
+				for _, si := range party.Roster.List {
+					mergeMeta.servicesSet[si.String()] = true
+				}
+			}
+		}
 	}
 	s.save()
 	return &StoreConfigReply{hash}, nil
@@ -142,7 +157,7 @@ func (s *Service) StoreConfig(req *StoreConfig) (network.Message, onet.ClientErr
 // a PopDesc and signed off. The FinalStatement holds the updated PopDesc, the
 // pruned attendees-public-key-list and the collective signature.
 func (s *Service) FinalizeRequest(req *FinalizeRequest) (network.Message, onet.ClientError) {
-	log.Lvlf3("Finalize: %s %+v", s.Context.ServerIdentity(), req)
+	log.Lvlf2("Finalize: %s %+v", s.Context.ServerIdentity(), req)
 	if s.data.Public == nil {
 		return nil, onet.NewClientErrorCode(ErrorInternal, "Not linked yet")
 	}
@@ -162,7 +177,7 @@ func (s *Service) FinalizeRequest(req *FinalizeRequest) (network.Message, onet.C
 	cc := &CheckConfig{final.Desc.Hash(), req.Attendees}
 	for _, c := range final.Desc.Roster.List {
 		if !c.ID.Equal(s.ServerIdentity().ID) {
-			log.Lvl3("Contacting", c, cc.Attendees)
+			log.Lvl2("Contacting", c, cc.Attendees)
 			err := s.SendRaw(c, cc)
 			if err != nil {
 				return nil, onet.NewClientErrorCode(ErrorInternal, err.Error())
@@ -220,14 +235,17 @@ func (s *Service) PropagateFinal(msg network.Message) {
 	}
 	s.data.Finals[string(fs.Desc.Hash())] = fs
 	s.save()
-	log.Lvlf3("%s Stored final statement %v", s.ServerIdentity(), fs)
+	log.Lvlf2("%s Stored final statement %v", s.ServerIdentity(), fs)
+	//str, _ := fs.Desc.toToml()
+	//log.Lvlf2("Party: %s", str)
+	//log.Lvlf2("Hash: %s", base64.StdEncoding.EncodeToString(fs.Desc.Hash()))
 }
 
 // FetchFinal returns FinalStatement by hash
 // used after Finalization
 func (s *Service) FetchFinal(req *FetchRequest) (network.Message,
 	onet.ClientError) {
-	log.Lvlf3("FetchFinal: %s %v", s.Context.ServerIdentity(), req.ID)
+	log.Lvlf2("FetchFinal: %s %v", s.Context.ServerIdentity(), req.ID)
 	if fs, ok := s.data.Finals[string(req.ID)]; !ok {
 		return nil, onet.NewClientErrorCode(ErrorInternal,
 			"No config found")
@@ -243,30 +261,30 @@ func (s *Service) FetchFinal(req *FetchRequest) (network.Message,
 
 func (s *Service) MergeRequest(req *MergeRequest) (network.Message,
 	onet.ClientError) {
-	log.Lvlf3("MergeRequest: %s %v", s.Context.ServerIdentity(), req.ID)
+	log.Lvlf2("MergeRequest: %s %v", s.Context.ServerIdentity(), req.ID)
 	var final *FinalStatement
-	var mergeSet *MergeSet
+	var mergeMeta *MergeMeta
 	var ok bool
 	if final, ok = s.data.Finals[string(req.ID)]; !ok {
 		return nil, onet.NewClientErrorCode(ErrorInternal,
 			"No config found")
 	}
-	if mergeSet, ok = s.data.MergeSets[string(req.ID)]; !ok {
+	if mergeMeta, ok = s.data.MergeMetas[string(req.ID)]; !ok {
 		return nil, onet.NewClientErrorCode(ErrorInternal,
-			"No mergeSet found")
+			"No mergeMeta found")
 	}
 	if len(final.Signature) <= 0 || final.Verify() != nil {
 		return nil, onet.NewClientErrorCode(ErrorOtherFinals,
 			"Not all other conodes finalized yet")
 	}
-	if len(final.Desc.MergedRosters) <= 0 {
+	if len(final.Desc.Parties) <= 1 {
 		return nil, onet.NewClientErrorCode(ErrorInternal,
 			"Party is unmergeable")
 	}
 	// Check if the party is the merge list
 	found := false
-	for _, r := range final.Desc.MergedRosters {
-		if Equal(r, final.Desc.Roster) {
+	for _, party := range final.Desc.Parties {
+		if Equal(party.Roster, final.Desc.Roster) {
 			found = true
 			break
 		}
@@ -275,87 +293,15 @@ func (s *Service) MergeRequest(req *MergeRequest) (network.Message,
 		return nil, onet.NewClientErrorCode(ErrorInternal,
 			"Party is not included in merge list")
 	}
-	return s.Merge(final, mergeSet)
-}
-
-// Sends MergeConfig to all parties,
-// Receives Replies, Update info about global merge party
-// When all merge party's info is saved, merge it and starts global sighning process
-// After all, sends StoreConfig request to other conodes of own party
-func (s *Service) Merge(final *FinalStatement, mergeSet *MergeSet) (*FinalizeResponse, onet.ClientError) {
-	for _, r := range final.Desc.MergedRosters {
-		// need to create new PopDesc object
-		desc := &PopDesc{}
-		*desc = *final.Desc
-		desc.Roster = r
-		// check if these parties weren't already merged
-		if _, ok := mergeSet.Set[string(desc.Hash())]; ok {
-			continue
-		}
-		mc := &MergeConfig{Final: final, ID: desc.Hash()}
-		// TODO: optimize not to request every conode of party.
-		// Not sure if this optimization is secure
-		for _, si := range r.List {
-			err := s.SendRaw(si, mc)
-			if err != nil {
-				return nil, onet.NewClientErrorCode(ErrorInternal, err.Error())
-			}
-			mcr := <-s.mcChannel
-
-			if mcr == nil {
-				return nil, onet.NewClientErrorCode(ErrorMerge,
-					"Error during merging")
-			}
-		}
-	}
-	// Unite the lists
-	for _, f := range mergeSet.Set {
-		// although there must not be any intersection
-		// in attendies list it's better to check it
-		// not simply extend the list
-		final.Attendees = unionAttendies(final.Attendees, f.Attendees)
-		final.Desc.Roster = unionRoster(final.Desc.Roster, f.Desc.Roster)
-	}
-
-	// Create a new final signature
-	tree := final.Desc.Roster.GenerateNaryTreeWithRoot(2, s.ServerIdentity())
-	if tree == nil {
-		return nil, onet.NewClientErrorCode(ErrorInternal,
-			"Root does not exist")
-	}
-	node, err := s.CreateProtocol(cosi.Name, tree)
-	if err != nil {
-		return nil, onet.NewClientError(err)
-	}
-	signature := make(chan []byte)
-	c := node.(*cosi.CoSi)
-	c.RegisterSignatureHook(func(sig []byte) {
-		signature <- sig[:64]
-	})
-	c.Message, err = final.Hash()
-	if err != nil {
-		return nil, onet.NewClientError(err)
-	}
-	go node.Start()
-
-	final.Signature = <-signature
-	replies, err := s.Propagate(final.Desc.Roster, final, 10000)
-	if err != nil {
-		return nil, onet.NewClientError(err)
-	}
-	if replies != len(final.Desc.Roster.List) {
-		log.Warn("Did only get", replies)
-	}
-
-	return &FinalizeResponse{final}, nil
-
+	// trigger merging process
+	return s.Merge(final, mergeMeta)
 }
 
 // MergeConfig recieves a final statement of requesting party,
 // hash of local party. And tries to merge them
 func (s *Service) MergeConfig(req *network.Envelope) {
-	log.Lvlf3("%s gets MergeConfig from %s", s.Context.ServerIdentity(),
-		req.ServerIdentity)
+	log.Lvlf2("%s gets MergeConfig from %s", s.Context.ServerIdentity().String(),
+		req.ServerIdentity.String())
 	// predeclaration due to use of goto
 	found := false
 	mc, ok := req.Msg.(*MergeConfig)
@@ -369,12 +315,13 @@ func (s *Service) MergeConfig(req *network.Envelope) {
 	}
 	mcr := &MergeConfigReply{PopStatusOK, mc.Final.Desc.Hash(), nil}
 	var final *FinalStatement
+	var mergeMeta *MergeMeta
 	if final, ok = s.data.Finals[string(mc.ID)]; !ok {
-		log.Error("No config found")
+		log.Errorf("No config found")
 		mcr.PopStatus = PopStatusWrongHash
+		goto send
 	}
-	var mergeSet *MergeSet
-	if mergeSet, ok = s.data.MergeSets[string(mc.ID)]; !ok {
+	if mergeMeta, ok = s.data.MergeMetas[string(mc.ID)]; !ok {
 		log.Error("No merge set found")
 		mcr.PopStatus = PopStatusWrongHash
 		goto send
@@ -384,24 +331,20 @@ func (s *Service) MergeConfig(req *network.Envelope) {
 		mcr.PopStatus = PopStatusMergeNonFinalized
 		goto send
 	}
-	if len(final.Desc.MergedRosters) <= 0 {
+	if len(final.Desc.Parties) <= 0 {
 		log.Error("Party is unmergeable")
 		mcr.PopStatus = PopStatusMergeError
 		goto send
 	}
 	if final.Desc.DateTime != mc.Final.Desc.DateTime {
-		log.Error("Party was held in diferent times")
+		log.Error("Parties were held in different times")
 		mcr.PopStatus = PopStatusMergeError
 		goto send
 	}
-	if _, ok = mergeSet.Set[string(mc.Final.Desc.Hash())]; ok {
-		log.Error("This party was already merged")
-		mcr.PopStatus = PopStatusMergeError
-		goto send
-	}
+
 	// Check if the party is the merge list
-	for _, r := range final.Desc.MergedRosters {
-		if Equal(r, final.Desc.Roster) {
+	for _, party := range final.Desc.Parties {
+		if Equal(party.Roster, final.Desc.Roster) {
 			found = true
 			break
 		}
@@ -411,8 +354,14 @@ func (s *Service) MergeConfig(req *network.Envelope) {
 		mcr.PopStatus = PopStatusMergeError
 		goto send
 	}
+	if _, ok = mergeMeta.statementsMap[string(mc.Final.Desc.Hash())]; ok {
+		log.Lvl2(s.ServerIdentity(), "Party was already merged, sent from",
+			req.ServerIdentity.String())
+	} else {
+		mergeMeta.statementsMap[string(mc.Final.Desc.Hash())] = mc.Final
+	}
 
-	mergeSet.Set[string(mc.Final.Desc.Hash())] = mc.Final
+	delete(mergeMeta.servicesSet, req.ServerIdentity.String())
 
 	mcr.Final = final
 
@@ -425,12 +374,16 @@ send:
 	if mcr.PopStatus < PopStatusOK {
 		return
 	}
-
-	// TODO: Try to ping others without waiting MergeRequests
-	_, err = s.Merge(final, mergeSet)
+	// send merge info to other parties nodes
+	_, err = s.Merge(final, mergeMeta)
+	if err != nil {
+		log.Errorf("%s Merge error %s", s.ServerIdentity(), err.Error())
+	}
 }
 
 func (s Service) MergeConfigReply(req *network.Envelope) {
+	log.Lvlf2("MergeConfigReply: %s from %s got %v",
+		s.ServerIdentity(), req.ServerIdentity.String(), req.Msg)
 	mcrVal, ok := req.Msg.(*MergeConfigReply)
 	var mcr *MergeConfigReply
 	mcr = func() *MergeConfigReply {
@@ -438,8 +391,8 @@ func (s Service) MergeConfigReply(req *network.Envelope) {
 			log.Errorf("Didn't get a CheckConfigReply: %v", req.Msg)
 			return nil
 		}
-		var mergeSet *MergeSet
-		if mergeSet, ok = s.data.MergeSets[string(mcrVal.PopHash)]; !ok {
+		var mergeMeta *MergeMeta
+		if mergeMeta, ok = s.data.MergeMetas[string(mcrVal.PopHash)]; !ok {
 			log.Error("No party with given hash")
 			return nil
 		}
@@ -451,12 +404,101 @@ func (s Service) MergeConfigReply(req *network.Envelope) {
 			log.Error("Empty FinalStatement in reply")
 			return nil
 		}
-		mergeSet.Set[string(mcrVal.Final.Desc.Hash())] = mcrVal.Final
+
+		// Assumed that FinalStatement from all nodes party is only one
+		// and it won't be rewritten by the other nodes from the same party
+		mergeMeta.statementsMap[string(mcrVal.Final.Desc.Hash())] = mcrVal.Final
+		if _, ok = mergeMeta.servicesSet[req.ServerIdentity.String()]; ok {
+			delete(mergeMeta.servicesSet, req.ServerIdentity.String())
+		}
 		return mcrVal
 	}()
 	if len(s.mcChannel) == 0 {
 		s.mcChannel <- mcr
 	}
+}
+
+// Sends MergeConfig to all parties,
+// Receives Replies, updates info about global merge party
+// When all merge party's info is saved, merge it and starts global sighning process
+// After all, sends StoreConfig request to other conodes of own party
+func (s *Service) Merge(final *FinalStatement, mergeMeta *MergeMeta) (*FinalizeResponse, onet.ClientError) {
+	if mergeMeta.distrib || len(mergeMeta.servicesSet) <= 0 {
+		log.Lvl2(s.ServerIdentity(), "Not enter merge")
+		return &FinalizeResponse{final}, nil
+	}
+	log.Lvl2("Merge ", s.ServerIdentity())
+	mergeMeta.distrib = true
+	final.Signature = []byte{}
+	// Flag indicating that there were connection with other nodes
+	for _, party := range final.Desc.Parties {
+		popDesc := PopDesc{
+			Name:     final.Desc.Name,
+			DateTime: final.Desc.DateTime,
+			Location: party.Location,
+			Roster:   party.Roster,
+			Parties:  final.Desc.Parties,
+		}
+		hash := popDesc.Hash()
+		if bytes.Equal(final.Desc.Hash(), hash) {
+			continue
+		}
+		mc := &MergeConfig{Final: final, ID: hash}
+		// TODO: optimize not to request every conode of party.
+		// In this case we need to send request to only one node from party
+		// not O(n^2) messages
+		// not O(n^2) complexity of messaging stage of Merge func
+		// Not sure if this optimization is secure
+		for _, si := range party.Roster.List {
+			if _, ok := mergeMeta.servicesSet[si.String()]; !ok {
+				// no need to talk with this node one more time
+				continue
+			}
+			log.Lvlf2("Sending from %s to %s", s.ServerIdentity(), si)
+			err := s.SendRaw(si, mc)
+			if err != nil {
+				return nil, onet.NewClientErrorCode(ErrorInternal, err.Error())
+			}
+			delete(mergeMeta.servicesSet, si.String())
+			mcr := <-s.mcChannel
+			if mcr == nil {
+				return nil, onet.NewClientErrorCode(ErrorMerge,
+					"Error during merging")
+			}
+		}
+	}
+	// Unite the lists
+	for _, f := range mergeMeta.statementsMap {
+		// although there must not be any intersection
+		// in attendies list it's better to check it
+		// not simply extend the list
+		final.Attendees = unionAttendies(final.Attendees, f.Attendees)
+		final.Desc.Roster = unionRoster(final.Desc.Roster, f.Desc.Roster)
+	}
+	tree := final.Desc.Roster.GenerateNaryTreeWithRoot(2, s.ServerIdentity())
+	if tree == nil {
+		return nil, onet.NewClientErrorCode(ErrorInternal,
+			"Root does not exist")
+	}
+	node, err := s.CreateProtocol(cosi.Name, tree)
+	if err != nil {
+		return nil, onet.NewClientError(err)
+	}
+	signature := make(chan []byte)
+	c := node.(*cosi.CoSi)
+
+	c.RegisterSignatureHook(func(sig []byte) {
+		signature <- sig[:64]
+	})
+	c.Message, err = final.Hash()
+	if err != nil {
+		return nil, onet.NewClientError(err)
+	}
+	go node.Start()
+
+	final.Signature = <-signature
+	s.save()
+	return &FinalizeResponse{final}, nil
 }
 
 // CheckConfig receives a hash for a config and a list of attendees. It returns
@@ -476,9 +518,7 @@ func (s *Service) CheckConfig(req *network.Envelope) {
 		if final, ok = s.data.Finals[string(cc.PopHash)]; !ok {
 			ccr.PopStatus = PopStatusWrongHash
 		} else {
-			log.Lvlf3("before:len(final.Attendees) = %d", len(final.Attendees))
 			final.Attendees = intersectAttendees(final.Attendees, cc.Attendees)
-			log.Lvlf3("after: len(final.Attendees) = %d", len(final.Attendees))
 			if len(final.Attendees) == 0 {
 				ccr.PopStatus = PopStatusNoAttendees
 			} else {
@@ -487,7 +527,7 @@ func (s *Service) CheckConfig(req *network.Envelope) {
 			}
 		}
 	}
-	log.Lvl3(s.Context.ServerIdentity(), ccr.PopStatus, ccr.Attendees)
+	log.Lvl2(s.Context.ServerIdentity(), ccr.PopStatus, ccr.Attendees)
 	err := s.SendRaw(req.ServerIdentity, ccr)
 	if err != nil {
 		log.Error("Couldn't send reply:", err)
@@ -559,15 +599,15 @@ func unionAttendies(atts1, atts2 []abstract.Point) []abstract.Point {
 }
 
 func unionRoster(r1, r2 *onet.Roster) *onet.Roster {
-	myMap := make(map[*network.ServerIdentity]bool)
+	myMap := make(map[string]bool)
 	na := make([]*network.ServerIdentity, 0, len(r1.List)+len(r2.List))
 
 	na = append(na, r1.List...)
 	for _, s := range r1.List {
-		myMap[s] = true
+		myMap[s.String()] = true
 	}
 	for _, s := range r2.List {
-		if _, ok := myMap[s]; !ok {
+		if _, ok := myMap[s.String()]; !ok {
 			na = append(na, s)
 		}
 	}
@@ -576,7 +616,7 @@ func unionRoster(r1, r2 *onet.Roster) *onet.Roster {
 
 // saves the actual identity
 func (s *Service) save() {
-	log.Lvl3("Saving service")
+	log.Lvl2("Saving service", s.ServerIdentity())
 	err := s.Save("storage", s.data)
 	if err != nil {
 		log.Error("Couldn't save data:", err)
@@ -617,8 +657,8 @@ func newService(c *onet.Context) onet.Service {
 	if s.data.Finals == nil {
 		s.data.Finals = make(map[string]*FinalStatement)
 	}
-	if s.data.MergeSets == nil {
-		s.data.MergeSets = make(map[string]*MergeSet)
+	if s.data.MergeMetas == nil {
+		s.data.MergeMetas = make(map[string]*MergeMeta)
 	}
 	var err error
 	s.Propagate, err = messaging.NewPropagationFunc(c, "PoPPropagate", s.PropagateFinal)

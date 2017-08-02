@@ -146,10 +146,12 @@ func NewFinalStatementFromToml(b []byte) (*FinalStatement, error) {
 		})
 	}
 	rostr := onet.NewRoster(sis)
-	mrostrs := make([]*onet.Roster, len(fsToml.Desc.MergedRosters))
-	for i, roster := range fsToml.Desc.MergedRosters {
+	mparties := make([]*ShortDesc, len(fsToml.Desc.Parties))
+	for i, desc := range fsToml.Desc.Parties {
+		mparties[i].Location = desc.Location
+
 		sis = sis[:0]
-		for _, s := range roster {
+		for _, s := range desc.Roster {
 			uid, err := uuid.FromString(s[2])
 			if err != nil {
 				return nil, err
@@ -165,15 +167,15 @@ func NewFinalStatementFromToml(b []byte) (*FinalStatement, error) {
 				Public:      pub,
 			})
 		}
-		mrostrs[i] = onet.NewRoster(sis)
+		mparties[i].Roster = onet.NewRoster(sis)
 	}
 
 	desc := &PopDesc{
-		Name:          fsToml.Desc.Name,
-		DateTime:      fsToml.Desc.DateTime,
-		Location:      fsToml.Desc.Location,
-		Roster:        rostr,
-		MergedRosters: mrostrs,
+		Name:     fsToml.Desc.Name,
+		DateTime: fsToml.Desc.DateTime,
+		Location: fsToml.Desc.Location,
+		Roster:   rostr,
+		Parties:  mparties,
 	}
 	atts := []abstract.Point{}
 	for _, p := range fsToml.Attendees {
@@ -196,30 +198,40 @@ func NewFinalStatementFromToml(b []byte) (*FinalStatement, error) {
 	}, nil
 }
 
-// ToToml returns a toml-slice of byte and an eventual error.
-func (fs *FinalStatement) ToToml() ([]byte, error) {
-	rostr, err := toToml(fs.Desc.Roster)
+func (desc *PopDesc) toToml() (*popDescToml, error) {
+	rostr, err := toToml(desc.Roster)
 	if err != nil {
 		return nil, err
 	}
-	mrostrs := make([][][]string, len(fs.Desc.MergedRosters))
-	if len(fs.Desc.MergedRosters) > 0 {
-		for i, roster := range fs.Desc.MergedRosters {
-			rostr, err := toToml(roster)
+	descToml := &popDescToml{
+		Name:     desc.Name,
+		DateTime: desc.DateTime,
+		Location: desc.Location,
+		Roster:   rostr,
+	}
+	return descToml, nil
+}
+
+// ToToml returns a toml-slice of byte and an eventual error.
+func (fs *FinalStatement) ToToml() ([]byte, error) {
+	descToml, err := fs.Desc.toToml()
+	if err != nil {
+		return nil, err
+	}
+	if len(fs.Desc.Parties) > 1 {
+		descToml.Parties = make([]shortDescToml, len(fs.Desc.Parties))
+		for i, p := range fs.Desc.Parties {
+			rostr, err := toToml(p.Roster)
 			if err != nil {
 				return nil, err
 			}
-			mrostrs[i] = rostr
+			sh := shortDescToml{
+				Location: p.Location,
+				Roster:   rostr,
+			}
+			descToml.Parties[i] = sh
 		}
 	}
-	descToml := &popDescToml{
-		Name:          fs.Desc.Name,
-		DateTime:      fs.Desc.DateTime,
-		Location:      fs.Desc.Location,
-		Roster:        rostr,
-		MergedRosters: mrostrs,
-	}
-
 	atts := make([]string, len(fs.Attendees))
 	for i, p := range fs.Attendees {
 		str, err := crypto.PubToString64(nil, p)
@@ -283,17 +295,27 @@ type PopDesc struct {
 	Location string
 	// Roster of all responsible conodes for that party.
 	Roster *onet.Roster
-	// Rosters of parties to be merged
-	MergedRosters []*onet.Roster
+	// List of parties to be merged
+	Parties []*ShortDesc
 }
 
 // represents a PopDesc in string-version for toml.
 type popDescToml struct {
-	Name          string
-	DateTime      string
-	Location      string
-	Roster        [][]string
-	MergedRosters [][][]string
+	Name     string
+	DateTime string
+	Location string
+	Roster   [][]string
+	Parties  []shortDescToml
+}
+
+type ShortDesc struct {
+	Location string
+	Roster   *onet.Roster
+}
+
+type shortDescToml struct {
+	Location string
+	Roster   [][]string
 }
 
 // Hash of this structure - calculated by hand instead of using network.Marshal.
@@ -308,9 +330,10 @@ func (p *PopDesc) Hash() []byte {
 		return []byte{}
 	}
 	hash.Write(buf)
-	if len(p.MergedRosters) > 0 {
-		for _, roster := range p.MergedRosters {
-			buf, err = roster.Aggregate.MarshalBinary()
+	if len(p.Parties) > 0 {
+		for _, party := range p.Parties {
+			hash.Write([]byte(party.Location))
+			buf, err = party.Roster.Aggregate.MarshalBinary()
 			if err != nil {
 				log.Error(err)
 				return []byte{}
