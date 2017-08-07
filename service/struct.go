@@ -49,7 +49,6 @@ type CheckConfigReply struct {
 }
 
 // MergeConfig asks if party is ready to merge
-// TODO: Can be reduced to PopDesc, Signature and hash
 type MergeConfig struct {
 	// FinalStatement of current party
 	Final *FinalStatement
@@ -64,6 +63,12 @@ type MergeConfigReply struct {
 	PopHash []byte
 	// FinalStatement of party was asked to merge
 	Final *FinalStatement
+}
+
+// Message requesting fellows to merge and update their lists
+type MergeCheck struct {
+	ID        []byte
+	MergeInfo []FinalStatement
 }
 
 // PinRequest will print a random pin on stdout if the pin is empty. If

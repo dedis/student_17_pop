@@ -157,8 +157,8 @@ func orgConfig(c *cli.Context) error {
 		mergeFile := c.Args().Get(1)
 		buf, err = ioutil.ReadFile(mergeFile)
 		log.ErrFatal(err, "While reading", mergeFile)
-		err = decodeGroups(string(buf), desc.Parties)
-		log.ErrFatal(err, "While decoding", mergeFile)
+		desc.Parties, err = decodeGroups(string(buf))
+		log.ErrFatal(err, "While decoding ", mergeFile)
 
 		// Check that current party is included in merge config
 		found := false
@@ -289,7 +289,6 @@ func orgMerge(c *cli.Context) error {
 	if len(party.Final.Desc.Parties) <= 0 {
 		log.Fatal("there is no parties to merge")
 	}
-
 	fs, err := client.Merge(cfg.Address, party.Final.Desc)
 	if err != nil {
 		return err
@@ -359,7 +358,6 @@ func attJoin(c *cli.Context) error {
 	}
 	party.Index = index
 	cfg.write()
-	log.Info("Stored new final statement and key.")
 	return nil
 }
 
@@ -526,30 +524,35 @@ func decodePopDesc(buf string, desc *service.PopDesc) error {
 	return nil
 }
 
+type shortDescGroupToml struct {
+	Location string
+	Servers  []*app.ServerToml `toml:"servers"`
+}
+
 // decode config of several groups into array of rosters
-func decodeGroups(buf string, descs []*service.PopDesc) error {
-	groups := []PopDescGroupToml{}
-	_, err := toml.Decode(buf, groups)
+func decodeGroups(buf string) ([]*service.ShortDesc, error) {
+	decodedGroups := make(map[string][]shortDescGroupToml)
+	_, err := toml.Decode(buf, &decodedGroups)
 	if err != nil {
-		return err
+		return []*service.ShortDesc{}, err
 	}
-	descs = make([]*service.PopDesc, len(groups))
-	for i, desc := range descs {
-		descGroup := groups[i]
-		desc.Name = descGroup.Name
-		desc.DateTime = descGroup.DateTime
+	groups := decodedGroups["parties"]
+	descs := []*service.ShortDesc{}
+	for _, descGroup := range groups {
+		desc := &service.ShortDesc{}
 		desc.Location = descGroup.Location
 		entities := make([]*network.ServerIdentity, len(descGroup.Servers))
-		for i, s := range descGroup.Servers {
+		for j, s := range descGroup.Servers {
 			en, err := toServerIdentity(s, network.Suite)
 			if err != nil {
-				return err
+				return []*service.ShortDesc{}, err
 			}
-			entities[i] = en
+			entities[j] = en
 		}
 		desc.Roster = onet.NewRoster(entities)
+		descs = append(descs, desc)
 	}
-	return nil
+	return descs, nil
 }
 
 // TODO: Needs to be public in app package!!!

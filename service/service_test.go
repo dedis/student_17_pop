@@ -10,7 +10,6 @@ import (
 	"gopkg.in/dedis/onet.v1/log"
 	"gopkg.in/dedis/onet.v1/network"
 
-	"encoding/base64"
 	"fmt"
 	"time"
 )
@@ -225,16 +224,19 @@ func TestService_MergeConfig(t *testing.T) {
 	hash[1] = string(descs[1].Hash())
 	cc := &MergeConfig{srvcs[0].data.Finals[hash[0]], []byte{}}
 	srvcs[0].SendRaw(r.List[1], cc)
-	require.Nil(t, <-srvcs[0].mcChannel)
-	srvcs[0].mcChannel <- nil
+	mcr := <-srvcs[0].mcChannel
+	require.NotNil(t, mcr)
+	require.Nil(t, mcr.Final)
+	require.Equal(t, PopStatusWrongHash, mcr.PopStatus)
 
 	require.Equal(t, nbrAtt, len(atts))
 
 	cc.ID = []byte(hash[1])
 	srvcs[0].SendRaw(r.List[2], cc)
-	rsp := <-srvcs[0].mcChannel
-	require.Nil(t, rsp)
-	srvcs[0].mcChannel <- nil
+	mcr = <-srvcs[0].mcChannel
+	require.NotNil(t, mcr)
+	require.Nil(t, mcr.Final)
+	require.Equal(t, PopStatusMergeNonFinalized, mcr.PopStatus)
 	// finish parties
 	for i, desc := range descs {
 		descHash := desc.Hash()
@@ -249,27 +251,27 @@ func TestService_MergeConfig(t *testing.T) {
 		require.True(t, ok)
 	}
 
-	//log.SetDebugVisible(3)
 	log.Info("Group 1, Server:", srvcs[0].ServerIdentity())
 	log.Info("Group 1, Server:", srvcs[1].ServerIdentity())
 	log.Info("Group 2, Server:", srvcs[2].ServerIdentity())
 	log.Info("Group 2, Server:", srvcs[3].ServerIdentity())
-
+	cc.Final = srvcs[0].data.Finals[hash[0]]
 	cc.ID = []byte(hash[1])
 	srvcs[0].SendRaw(r.List[2], cc)
 
 	for i, s := range srvcs {
+		if i != 2 {
+			continue
+		}
 		mergeMeta := s.data.MergeMetas[hash[i/2]]
-		Eventually(t, func() bool { return len(mergeMeta.servicesSet) == 0 },
-			fmt.Sprintf("Server %d servicesSet"))
 		Eventually(t, func() bool { return len(descs) == len(mergeMeta.statementsMap) },
 			fmt.Sprintf("Server %d statementsMap", i))
 	}
 
 	for i, s := range srvcs {
-		// first server won't merge because it started process via MergeConfig
+		// first party servers won't merge because it started process via MergeConfig
 		// not MergeRequest
-		if i < 1 {
+		if i < 2 {
 			continue
 		}
 		Eventually(t,
@@ -307,18 +309,15 @@ func TestService_MergeRequest(t *testing.T) {
 	hash[0] = string(descs[0].Hash())
 	hash[1] = string(descs[1].Hash())
 
-	log.SetDebugVisible(2)
 	// Wrong party check
 	mr := &MergeRequest{[]byte(hash[1])}
-	srvcs[0].MergeRequest(mr)
-	require.Nil(t, <-srvcs[0].mcChannel)
-
-	require.Equal(t, nbrAtt, len(atts))
+	_, err := srvcs[0].MergeRequest(mr)
+	require.NotNil(t, err)
 
 	// Not finished
 	mr.ID = []byte(hash[0])
-	srvcs[0].MergeRequest(mr)
-	require.Nil(t, <-srvcs[0].mcChannel)
+	_, err = srvcs[0].MergeRequest(mr)
+	require.NotNil(t, err)
 
 	// finish parties
 	for i, desc := range descs {
@@ -338,13 +337,39 @@ func TestService_MergeRequest(t *testing.T) {
 	log.Lvlf2("Group 1, Server: %s", srvcs[1].ServerIdentity())
 	log.Lvlf2("Group 2, Server: %s", srvcs[2].ServerIdentity())
 	log.Lvlf2("Group 2, Server: %s", srvcs[3].ServerIdentity())
-	mr.ID = []byte(hash[1])
-	srvcs[0].MergeRequest(mr)
-	require.NotNil(t, <-srvcs[0].mcChannel)
+	mr.ID = []byte(hash[0])
+	msg, err := srvcs[0].MergeRequest(mr)
+	require.Nil(t, err)
+	require.NotNil(t, msg)
+	for i, s := range srvcs {
+		if i == 1 || i == 3 {
+			// they don't update statementsMap
+			continue
+		}
+		mergeMeta := s.data.MergeMetas[hash[i/2]]
+		Eventually(t, func() bool { return len(descs) == len(mergeMeta.statementsMap) },
+			fmt.Sprintf("Server %d statementsMap", i))
+	}
+
 	for i, s := range srvcs {
 		Eventually(t,
-			func() bool { return nbrAtt == len(s.data.Finals[hash[i/2]].Attendees) },
-			fmt.Sprintf("Server %d not merged", i))
+			func() bool {
+				return (nbrAtt == len(s.data.Finals[hash[i/2]].Attendees))
+			},
+			fmt.Sprintf("Server %d attendees not merged", i))
+		Eventually(t,
+			func() bool {
+				return nbrNodes == len(s.data.Finals[hash[i/2]].Desc.Roster.List)
+			},
+			fmt.Sprintf("Server %d conodes not merged", i))
+	}
+	for i, s := range srvcs {
+		Eventually(t,
+			func() bool {
+				return len(s.data.Finals[hash[i/2]].Signature) > 0 &&
+					s.data.Finals[hash[i/2]].Verify() == nil
+			},
+			fmt.Sprintf("Signature in node %d is not created", i))
 	}
 
 }
@@ -412,11 +437,8 @@ func storeDescMerge(srvcs []onet.Service, el *onet.Roster, nbr int) ([]*PopDesc,
 		desc := descs[i/2]
 		s.(*Service).StoreConfig(&StoreConfig{desc})
 	}
-	for i, desc := range descs {
+	for _, desc := range descs {
 		desc.Parties = copy_descs
-		log.Infof("Party %d Hash: %s", i, base64.StdEncoding.EncodeToString(desc.Hash()))
-		str, _ := desc.toToml()
-		log.Info("Desc", str)
 	}
 	return descs, atts, sret
 }

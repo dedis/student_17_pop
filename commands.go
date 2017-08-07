@@ -41,6 +41,13 @@ func init() {
 				ArgsUsage: "party_hash",
 				Action:    orgFinal,
 			},
+			{
+				Name:      "merge",
+				Aliases:   []string{"m"},
+				Usage:     "starts merging process",
+				ArgsUsage: "party_hash",
+				Action:    orgMerge,
+			},
 		},
 	}
 

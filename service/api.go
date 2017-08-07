@@ -219,13 +219,13 @@ func (fs *FinalStatement) ToToml() ([]byte, error) {
 		return nil, err
 	}
 	if len(fs.Desc.Parties) > 1 {
-		descToml.Parties = make([]shortDescToml, len(fs.Desc.Parties))
+		descToml.Parties = make([]ShortDescToml, len(fs.Desc.Parties))
 		for i, p := range fs.Desc.Parties {
 			rostr, err := toToml(p.Roster)
 			if err != nil {
 				return nil, err
 			}
-			sh := shortDescToml{
+			sh := ShortDescToml{
 				Location: p.Location,
 				Roster:   rostr,
 			}
@@ -305,7 +305,7 @@ type popDescToml struct {
 	DateTime string
 	Location string
 	Roster   [][]string
-	Parties  []shortDescToml
+	Parties  []ShortDescToml
 }
 
 type ShortDesc struct {
@@ -313,7 +313,7 @@ type ShortDesc struct {
 	Roster   *onet.Roster
 }
 
-type shortDescToml struct {
+type ShortDescToml struct {
 	Location string
 	Roster   [][]string
 }
