@@ -112,6 +112,8 @@ type FinalStatement struct {
 	Attendees []abstract.Point
 	// Signature is created by all conodes responsible for that pop-party
 	Signature []byte
+	// Flag indicates, that party was merged
+	Merged bool
 }
 
 // The toml-structure for (un)marshaling with toml
@@ -119,6 +121,7 @@ type finalStatementToml struct {
 	Desc      *popDescToml
 	Attendees []string
 	Signature string
+	Merged    bool
 }
 
 // NewFinalStatementFromToml creates a final statement from a toml slice-of-bytes.
@@ -195,6 +198,7 @@ func NewFinalStatementFromToml(b []byte) (*FinalStatement, error) {
 		Desc:      desc,
 		Attendees: atts,
 		Signature: sig,
+		Merged:    fsToml.Merged,
 	}, nil
 }
 
@@ -244,6 +248,7 @@ func (fs *FinalStatement) ToToml() ([]byte, error) {
 		Desc:      descToml,
 		Attendees: atts,
 		Signature: base64.StdEncoding.EncodeToString(fs.Signature),
+		Merged:    fs.Merged,
 	}
 	var buf bytes.Buffer
 	err = toml.NewEncoder(&buf).Encode(fsToml)

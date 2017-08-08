@@ -321,7 +321,7 @@ func attCreate(c *cli.Context) error {
 func attJoin(c *cli.Context) error {
 	log.Info("att: join")
 	if c.NArg() < 2 {
-		log.Fatal("Please give private key and party-hash.")
+		log.Fatal("Please give private key and final.toml")
 	}
 	privStr := c.Args().First()
 	privBuf, err := base64.StdEncoding.DecodeString(privStr)
@@ -329,21 +329,42 @@ func attJoin(c *cli.Context) error {
 	priv := network.Suite.Scalar()
 	log.ErrFatal(priv.UnmarshalBinary(privBuf))
 	cfg, client := getConfigClient(c)
-	party, err := cfg.getPartybyHash(c.Args().Get(1))
+
+	finalName := c.Args().Get(1)
+	buf, err := ioutil.ReadFile(finalName)
 	log.ErrFatal(err)
-	if len(party.Final.Signature) <= 0 || party.Final.Verify() != nil {
+	final, err := service.NewFinalStatementFromToml(buf)
+	log.ErrFatal(err)
+
+	if len(final.Signature) <= 0 || final.Verify() != nil {
 		log.Info("The local config is not finished yet")
 		log.Info("Fetching final statement")
 		// Need to get the updated version of party config
 		// Cause attendee doesn't know,
 		// whether it has finished successfully or not
-		fs, err := client.FetchFinal(cfg.Address, party.Final.Desc.Hash())
+		fs, err := client.FetchFinal(cfg.Address, final.Desc.Hash())
 		log.ErrFatal(err)
 		if len(fs.Signature) <= 0 || fs.Verify() != nil {
 			log.Fatal("Fetched final statement is invalid")
 		}
-		party.Final = fs
+		final = fs
 	}
+
+	if len(final.Desc.Parties) > 0 && !final.Merged {
+		log.Info("The local party is not merged yet")
+		log.Info("Fetching final statement")
+		fs, err := client.FetchFinal(cfg.Address, final.Desc.Hash())
+		log.ErrFatal(err)
+		if !fs.Merged {
+			log.Fatal("Gloabal party is not merged")
+		}
+		if len(fs.Signature) <= 0 || fs.Verify() != nil {
+			log.Fatal("Fetched final statement is invalid")
+		}
+		final = fs
+	}
+	party := &PartyConfig{}
+	party.Final = final
 	party.Private = priv
 	party.Public = network.Suite.Point().Mul(nil, priv)
 	index := -1
@@ -357,7 +378,10 @@ func attJoin(c *cli.Context) error {
 		log.Fatal("Didn't find our public key in the final statement!")
 	}
 	party.Index = index
+	hash := base64.StdEncoding.EncodeToString(final.Desc.Hash())
+	cfg.Parties[hash] = party
 	cfg.write()
+	log.Infof("Stored final statement, hash: %s", hash)
 	return nil
 }
 
@@ -418,6 +442,7 @@ func attVerify(c *cli.Context) error {
 	tag, err := base64.StdEncoding.DecodeString(c.Args().Get(3))
 	log.ErrFatal(err)
 	sigtag := append(sig, tag...)
+	log.Info("party.Final.Attendees", party.Final.Attendees)
 	ctag, err := anon.Verify(network.Suite, msg,
 		anon.Set(party.Final.Attendees), ctx, sigtag)
 	log.ErrFatal(err)

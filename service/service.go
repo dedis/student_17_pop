@@ -30,6 +30,8 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sort"
+	"strings"
 
 	"gopkg.in/dedis/cothority.v1/cosi/protocol"
 	"gopkg.in/dedis/cothority.v1/messaging"
@@ -246,7 +248,6 @@ func (s *Service) FetchFinal(req *FetchRequest) (network.Message,
 
 func (s *Service) MergeRequest(req *MergeRequest) (network.Message,
 	onet.ClientError) {
-	log.SetDebugVisible(2)
 	log.Lvlf2("MergeRequest: %s %v", s.Context.ServerIdentity(), req.ID)
 	var final *FinalStatement
 	var mergeMeta *MergeMeta
@@ -280,8 +281,6 @@ func (s *Service) MergeRequest(req *MergeRequest) (network.Message,
 			"Party is not included in merge list")
 	}
 	// trigger merging process
-	log.Infof("Desc: %+v", final.Desc)
-	log.Infof("Roster: %+v", final.Desc.Roster)
 	return s.Merge(final, mergeMeta)
 }
 
@@ -490,6 +489,7 @@ func (s *Service) MergeCheck(req *network.Envelope) {
 	go node.Start()
 
 	final.Signature = <-signature
+	final.Merged = true
 
 	s.save()
 }
@@ -534,10 +534,6 @@ func (s *Service) Merge(final *FinalStatement, mergeMeta *MergeMeta) (*FinalizeR
 			Parties:  final.Desc.Parties,
 		}
 		hash := popDesc.Hash()
-		log.Info("party.Location", party.Location)
-		log.Info("party.Roster", party.Roster)
-		log.Info("final.Desc.Location", final.Desc.Location)
-		log.Info("final.Desc.Roster", final.Desc.Roster)
 		if _, ok := mergeMeta.statementsMap[string(hash)]; ok {
 			continue
 		}
@@ -573,6 +569,9 @@ func (s *Service) Merge(final *FinalStatement, mergeMeta *MergeMeta) (*FinalizeR
 		final.Attendees = unionAttendies(final.Attendees, f.Attendees)
 		final.Desc.Roster = unionRoster(final.Desc.Roster, f.Desc.Roster)
 	}
+	sort.Slice(final.Attendees, func(i, j int) bool {
+		return strings.Compare(final.Attendees[i].String(), final.Attendees[j].String()) < 0
+	})
 	tree := final.Desc.Roster.GenerateNaryTreeWithRoot(2, s.ServerIdentity())
 	if tree == nil {
 		return nil, onet.NewClientErrorCode(ErrorInternal,
@@ -595,8 +594,8 @@ func (s *Service) Merge(final *FinalStatement, mergeMeta *MergeMeta) (*FinalizeR
 	go node.Start()
 
 	final.Signature = <-signature
+	final.Merged = true
 	s.save()
-	log.Info("len(final.Attendees)", len(final.Attendees))
 	return &FinalizeResponse{final}, nil
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-DBG_TEST=3
+DBG_TEST=1
 DBG_APP=3
 NBR_CLIENTS=3
 NBR_SERVERS=3
@@ -22,22 +22,22 @@ main(){
 	addr[2]=127.0.0.1:2004
 	addr[3]=127.0.0.1:2006
 
-	#test Build
-	#test Check
-	#test OrgLink
-	#test Save
-	#test OrgConfig
-	#test AtCreate
-	#test OrgPublic
-	#test OrgPublic2
-	#test OrgFinal1
-	#test OrgFinal2
-	#test OrgFinal3
-	#test AtJoin
-	#test AtSign
-	#test AtVerify
-	#test AtMultipleKey
-	test Merge
+	test Build
+	test Check
+	test OrgLink
+	test Save
+	test OrgConfig
+	test AtCreate
+	test OrgPublic
+	test OrgPublic2
+	test OrgFinal1
+	test OrgFinal2
+	test OrgFinal3
+	test AtJoin
+	test AtSign
+	test AtVerify
+	test AtMultipleKey
+	#test Merge
 	stopTest
 }
 
@@ -45,20 +45,18 @@ testMerge(){
 	MERGE_FILE="pop_merge.toml"
 	mkFinal
 
-	# TODO: Should be OK not?
-	# I suppose NO.
-	#testOK runCl 1 attendee join ${priv[1]} ${pop_hash[1]}
-	#testOK runCl 2 attendee join ${priv[2]} ${pop_hash[2]}
-	#testOK runCl 3 attendee join ${priv[3]} ${pop_hash[3]}
+	testFail runCl 1 attendee join ${priv[1]} final1.toml 
+	testFail runCl 2 attendee join ${priv[2]} final2.toml 
+	testFail runCl 3 attendee join ${priv[3]} final3.toml 
 	
 	testFail runCl 1 org merge
-	testFail runCl 2 org merge ${pop_hash[1]}
+	testFail runCl 3 org merge ${pop_hash[1]}
 
 	testOK runCl 1 org merge ${pop_hash[1]}
 
-	testOK runCl 1 attendee join ${priv[1]} ${pop_hash[1]}
-	testOK runCl 2 attendee join ${priv[2]} ${pop_hash[2]}
-	testOK runCl 3 attendee join ${priv[3]} ${pop_hash[3]}
+	testOK runCl 1 attendee join ${priv[1]} final1.toml 
+	testOK runCl 2 attendee join ${priv[2]} final2.toml 
+	testOK runCl 3 attendee join ${priv[3]} final3.toml 
 
 	for i in {1..3}; do
 		runDbgCl 1 $i attendee sign msg1 ctx1 ${pop_hash[$i]} | tee sign$i.toml
@@ -94,15 +92,15 @@ testAtMultipleKey(){
 	runCl 2 org public ${pub[3]} ${pop_hash[2]}
 
 	runCl 1 org final  ${pop_hash[1]}
-	runCl 2 org final  ${pop_hash[1]}
+	runDbgCl 1 2 org final  ${pop_hash[1]} | tail > final1.toml
 	runCl 1 org final  ${pop_hash[2]}
-	runCl 2 org final  ${pop_hash[2]}
+	runDbgCl 1 2 org final  ${pop_hash[2]} | tail > final2.toml
 
 
-	testOK runCl 1 attendee join ${priv[1]} ${pop_hash[1]}
-	testOK runCl 1 attendee join ${priv[2]} ${pop_hash[2]}
-	testOK runCl 2 attendee join ${priv[3]} ${pop_hash[2]}
-
+	testOK runCl 1 attendee join ${priv[1]} final1.toml
+	testOK runCl 1 attendee join ${priv[2]} final2.toml
+	testOK runCl 2 attendee join ${priv[3]} final2.toml
+ 
 	runDbgCl 1 1 attendee sign msg1 ctx1 ${pop_hash[1]} > sign.toml
 	tag[1]=$( grep Tag: sign.toml | sed -e "s/.* //")
 	sig[1]=$( grep Signature: sign.toml | sed -e "s/.* //")
@@ -142,9 +140,9 @@ testAtVerify(){
 	testFail runCl 2 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} ${pop_hash[2]}
 	testOK runCl 3 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} ${pop_hash[3]}
 
-	testFail runCl 1 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} ${pop_hash[2]}
-	testOK runCl 1 attendee join ${priv[1]} ${pop_hash[2]}
-	testOK runCl 1 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} ${pop_hash[2]}
+	testFail runCl 1 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} ${pop_hash[3]}
+	testOK runCl 1 attendee join ${priv[1]} final3.toml
+	testOK runCl 1 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} ${pop_hash[3]}
 }
 
 tag=()
@@ -162,7 +160,8 @@ testAtSign(){
 	mkFinal
 	testFail runCl 1 attendee sign msg1 ctx1 ${pop_hash[1]}
 	for i in {1..3}; do
-		runCl $i attendee join ${priv[$i]} ${pop_hash[$i]}
+		runDbgCl 1 $i attendee join ${priv[$i]} final$i.toml > pop_hash_file
+		pop_hash[$i]=$(grep hash: pop_hash_file | sed -e "s/.* //")
 	done
 	testFail runCl 1 attendee sign
 	testFail runCl 1 attendee sign msg1 ctx1 ${pop_hash[2]}
@@ -174,7 +173,7 @@ testAtSign(){
 mkAtJoin(){
 	mkFinal
 	for i in {1..3}; do
-		runCl $i attendee join ${priv[$i]} ${pop_hash[$i]}
+		runCl $i attendee join ${priv[$i]} final$i.toml
 	done
 }
 
@@ -183,32 +182,32 @@ testAtJoin(){
 
 	# att1 - p1, p2; att2 - p2; att3 - p3;
 	runCl 1 org public ${pub[1]} ${pop_hash[1]}
-	runCl 3 org public ${pub[1]} ${pop_hash[1]}
-	runCl 1 org public ${pub[2]} ${pop_hash[2]}
+	runCl 2 org public ${pub[1]} ${pop_hash[1]}
 	runCl 2 org public ${pub[2]} ${pop_hash[2]}
-	runCl 2 org public ${pub[3]} ${pop_hash[3]}
+	runCl 3 org public ${pub[2]} ${pop_hash[2]}
 	runCl 3 org public ${pub[3]} ${pop_hash[3]}
+	runCl 1 org public ${pub[3]} ${pop_hash[3]}
 
-	runCl 1 org public ${pub[1]} ${pop_hash[2]}
 	runCl 2 org public ${pub[1]} ${pop_hash[2]}
+	runCl 3 org public ${pub[1]} ${pop_hash[2]}
 
 	# check that fails without finalization
 	testFail runCl 1 attendee join ${priv[1]} ${pop_hash[1]}
 
 	runCl 1 org final  ${pop_hash[1]}
-	runCl 3 org final  ${pop_hash[1]}
-	runCl 1 org final  ${pop_hash[2]}
+	runDbgCl 1 2 org final  ${pop_hash[1]} | tail > final1.toml
 	runCl 2 org final  ${pop_hash[2]}
-	runCl 2 org final  ${pop_hash[3]}
+	runDbgCl 1 3 org final  ${pop_hash[2]} | tail > final2.toml
 	runCl 3 org final  ${pop_hash[3]}
+	runDbgCl 1 1 org final  ${pop_hash[3]} | tail > final3.toml
 
 	testFail runCl 1 attendee join
 	testFail runCl 1 attendee join ${priv[1]}
-	testFail runCl 1 attendee join badkey ${pop_hash[1]}
-	testFail runCl 1 attendee join ${priv[1]} ${pop_hash[3]}
-	testOK runCl 1 attendee join ${priv[1]} ${pop_hash[1]}
-	testOK runCl 2 attendee join ${priv[2]} ${pop_hash[2]}
-	testOK runCl 3 attendee join ${priv[3]} ${pop_hash[3]}
+	testFail runCl 1 attendee join badkey final1.toml
+	testFail runCl 1 attendee join ${priv[1]} final3.toml
+	testOK runCl 1 attendee join ${priv[1]} final1.toml
+	testOK runCl 2 attendee join ${priv[2]} final2.toml
+	testOK runCl 3 attendee join ${priv[3]} final3.toml
 }
 
 mkFinal(){
@@ -216,41 +215,40 @@ mkFinal(){
 
 	# att1 - p1, p2; att2 - p2; att3 - p3;
 	runCl 1 org public ${pub[1]} ${pop_hash[1]}
-	runCl 3 org public ${pub[1]} ${pop_hash[1]}
-	runCl 1 org public ${pub[2]} ${pop_hash[2]}
+	runCl 2 org public ${pub[1]} ${pop_hash[1]}
 	runCl 2 org public ${pub[2]} ${pop_hash[2]}
-	runCl 2 org public ${pub[3]} ${pop_hash[3]}
+	runCl 3 org public ${pub[2]} ${pop_hash[2]}
 	runCl 3 org public ${pub[3]} ${pop_hash[3]}
+	runCl 1 org public ${pub[3]} ${pop_hash[3]}
 
-	runCl 1 org public ${pub[1]} ${pop_hash[2]}
-	runCl 2 org public ${pub[1]} ${pop_hash[2]}
+	runCl 1 org public ${pub[1]} ${pop_hash[3]}
+	runCl 3 org public ${pub[1]} ${pop_hash[3]}
 
 	runCl 1 org final  ${pop_hash[1]}
-	runCl 3 org final  ${pop_hash[1]}
-	runCl 1 org final  ${pop_hash[2]}
+	runDbgCl 1 2 org final  ${pop_hash[1]} | tail > final1.toml
 	runCl 2 org final  ${pop_hash[2]}
-	runCl 2 org final  ${pop_hash[3]}
+	runDbgCl 1 3 org final  ${pop_hash[2]} | tail > final2.toml
 	runCl 3 org final  ${pop_hash[3]}
+	runDbgCl 1 1 org final  ${pop_hash[3]} | tail > final3.toml
 }
 
 testOrgFinal3(){
 	mkConfig 3 3 2 1
 	runCl 1 org public ${pub[1]} ${pop_hash[1]}
-	runCl 1 org public ${pub[1]} ${pop_hash[2]}
+	runCl 2 org public ${pub[1]} ${pop_hash[1]}
 	runCl 2 org public ${pub[1]} ${pop_hash[2]}
-	runCl 2 org public ${pub[1]} ${pop_hash[3]}
-	runCl 3 org public ${pub[1]} ${pop_hash[1]}
+	runCl 3 org public ${pub[1]} ${pop_hash[2]}
 	runCl 3 org public ${pub[1]} ${pop_hash[3]}
+	runCl 1 org public ${pub[1]} ${pop_hash[3]}
 
 	testFail runCl 1 org final ${pop_hash[1]}
-	testFail runCl 2 org final ${pop_hash[1]}
-	testOK runCl 3 org final ${pop_hash[1]}
+	testFail runCl 3 org final ${pop_hash[1]}
+	testOK runCl 2 org final ${pop_hash[1]}
 
-	testFail runCl 1 org final ${pop_hash[2]}
-	testFail runCl 3 org final ${pop_hash[2]}
-	testOK runCl 2 org final ${pop_hash[2]}
+	testFail runCl 2 org final ${pop_hash[2]}
+	testOK runCl 3 org final ${pop_hash[2]}
 
-	testFail runCl 2 org final ${pop_hash[3]}
+	testFail runCl 1 org final ${pop_hash[3]}
 	testOK runCl 3 org final ${pop_hash[3]}
 }
 
@@ -285,11 +283,11 @@ testOrgFinal1(){
 testOrgPublic2(){
 	mkConfig 3 3 2 1
 	testOK runCl 1 org public ${pub[1]} ${pop_hash[1]}
-	testOK runCl 1 org public ${pub[1]} ${pop_hash[2]}
+	testOK runCl 2 org public ${pub[1]} ${pop_hash[1]}
 	testOK runCl 2 org public ${pub[1]} ${pop_hash[2]}
-	testOK runCl 2 org public ${pub[1]} ${pop_hash[3]}
-	testOK runCl 3 org public ${pub[1]} ${pop_hash[1]}
+	testOK runCl 3 org public ${pub[1]} ${pop_hash[2]}
 	testOK runCl 3 org public ${pub[1]} ${pop_hash[3]}
+	testOK runCl 1 org public ${pub[1]} ${pop_hash[3]}
 
 	testFail runCl 3 org public ${pub[1]} ${pop_hash[2]}
 }
@@ -306,11 +304,11 @@ testOrgPublic(){
 
 # need to store many party hashes as variables
 pop_hash=()
-# usage: $1 organizer and $2 parties, each has $3 parties, $4 key pairs
+# usage: $1 organizers(conodes) and $2 parties, each node has $3 parties, $4 attendees
 # example: 3 organizers, 2 parties for each
-# 1st org: parties #1, #2
-# 2nd org: parties #2, #3
-# 3rd org: parties #1, #3
+# 1st node: parties #1, #2
+# 2nd node: parties #2, #3
+# 3rd node: parties #1, #3
 mkConfig(){
 	local cl
 	local pc
@@ -321,8 +319,7 @@ mkConfig(){
 	do
 		for (( pc=1; pc<=$3; pc++ ))
 		do
-			num_pc=$((($pc + $cl + 1) % $2 + 1))
-			#runDbgCl 1 $cl org config pop_desc$num_pc.toml group$num_pc.toml > pop_hash
+			num_pc=$((($pc + $cl) % $2 + 1))
 			runDbgCl 1 $cl org config pop_desc$num_pc.toml $MERGE_FILE | tee pop_hash_file
 			pop_hash[$num_pc]=$(grep config: pop_hash_file | sed -e "s/.* //")
 		done
@@ -374,11 +371,11 @@ EOF
 		if [[ $2 -gt 1 ]]
 		then
 			local m=$(($n%$2 + 1))
-			sed -n "$((4*$n-3)),$((4*$n))p" public.toml >> pop_desc$m.toml
+			sed -n "$((4*$m-3)),$((4*$m))p" public.toml >> pop_desc$n.toml
 		fi
 	done
 	
-	for (( n=1; n<=$1; n++ ))
+	for (( n=1; n<=$2; n++ ))
 	do
 		cat << EOF >> pop_merge.toml
 [[parties]]
@@ -386,11 +383,10 @@ Location = "Earth, City$n"
 EOF
 		echo "[[parties.servers]]" >> pop_merge.toml
 		sed -n "$((4*$n-2)),$((4*$n))p" public.toml >> pop_merge.toml
-		local m=$(($n%$NBR_SERVERS + 1))
+		local m=$(($n%$2 + 1))
 		echo "[[parties.servers]]" >> pop_merge.toml
 		sed -n "$((4*$m-2)),$((4*$m))p" public.toml >> pop_merge.toml
 	done
-	cat pop_merge.toml
 }
 
 # $1 number of parties $2 number of organizers
