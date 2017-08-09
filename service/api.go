@@ -151,6 +151,7 @@ func NewFinalStatementFromToml(b []byte) (*FinalStatement, error) {
 	rostr := onet.NewRoster(sis)
 	mparties := make([]*ShortDesc, len(fsToml.Desc.Parties))
 	for i, desc := range fsToml.Desc.Parties {
+		mparties[i] = &ShortDesc{}
 		mparties[i].Location = desc.Location
 
 		sis = sis[:0]

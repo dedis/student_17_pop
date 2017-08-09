@@ -260,11 +260,18 @@ func TestService_MergeConfig(t *testing.T) {
 	srvcs[0].SendRaw(r.List[2], cc)
 
 	for i, s := range srvcs {
+		if i < 2 {
+			continue
+		}
+		Eventually(t, func() bool { return s.data.Finals[hash[i/2]].Merged },
+			fmt.Sprintf("Server %d not Merged", i))
+	}
+	for i, s := range srvcs {
 		if i != 2 {
 			continue
 		}
-		mergeMeta := s.data.MergeMetas[hash[i/2]]
-		Eventually(t, func() bool { return len(descs) == len(mergeMeta.statementsMap) },
+		meta := s.data.mergeMetas[hash[i/2]]
+		require.Equal(t, len(meta.statementsMap), len(descs),
 			fmt.Sprintf("Server %d statementsMap", i))
 	}
 
@@ -274,27 +281,17 @@ func TestService_MergeConfig(t *testing.T) {
 		if i < 2 {
 			continue
 		}
-		Eventually(t,
-			func() bool {
-				return (nbrAtt == len(s.data.Finals[hash[i/2]].Attendees))
-			},
+		require.Equal(t, len(s.data.Finals[hash[i/2]].Attendees),
+			nbrAtt,
 			fmt.Sprintf("Server %d attendees not merged", i))
-		Eventually(t,
-			func() bool {
-				return nbrNodes == len(s.data.Finals[hash[i/2]].Desc.Roster.List)
-			},
+		require.Equal(t,
+			len(s.data.Finals[hash[i/2]].Desc.Roster.List),
+			nbrNodes,
 			fmt.Sprintf("Server %d conodes not merged", i))
-	}
-	for i, s := range srvcs {
-		if i < 1 {
-			continue
-		}
-		Eventually(t,
-			func() bool {
-				return len(s.data.Finals[hash[i/2]].Signature) > 0 &&
-					s.data.Finals[hash[i/2]].Verify() == nil
-			},
-			fmt.Sprintf("Signature in node %d is created", i))
+
+		require.True(t, len(s.data.Finals[hash[i/2]].Signature) > 0 &&
+			s.data.Finals[hash[i/2]].Verify() == nil,
+			fmt.Sprintf("Signature in node %d is not created", i))
 	}
 }
 
@@ -342,33 +339,29 @@ func TestService_MergeRequest(t *testing.T) {
 	require.Nil(t, err)
 	require.NotNil(t, msg)
 	for i, s := range srvcs {
+		Eventually(t, func() bool { return s.data.Finals[hash[i/2]].Merged },
+			fmt.Sprintf("Server %d not Merged", i))
+	}
+	for i, s := range srvcs {
 		if i == 1 || i == 3 {
 			// they don't update statementsMap
 			continue
 		}
-		mergeMeta := s.data.MergeMetas[hash[i/2]]
-		Eventually(t, func() bool { return len(descs) == len(mergeMeta.statementsMap) },
+		meta := s.data.mergeMetas[hash[i/2]]
+		require.Equal(t, len(meta.statementsMap), len(descs),
 			fmt.Sprintf("Server %d statementsMap", i))
 	}
 
 	for i, s := range srvcs {
-		Eventually(t,
-			func() bool {
-				return (nbrAtt == len(s.data.Finals[hash[i/2]].Attendees))
-			},
+		require.Equal(t, len(s.data.Finals[hash[i/2]].Attendees),
+			nbrAtt,
 			fmt.Sprintf("Server %d attendees not merged", i))
-		Eventually(t,
-			func() bool {
-				return nbrNodes == len(s.data.Finals[hash[i/2]].Desc.Roster.List)
-			},
+		require.Equal(t,
+			len(s.data.Finals[hash[i/2]].Desc.Roster.List),
+			nbrNodes,
 			fmt.Sprintf("Server %d conodes not merged", i))
-	}
-	for i, s := range srvcs {
-		Eventually(t,
-			func() bool {
-				return len(s.data.Finals[hash[i/2]].Signature) > 0 &&
-					s.data.Finals[hash[i/2]].Verify() == nil
-			},
+		require.True(t, len(s.data.Finals[hash[i/2]].Signature) > 0 &&
+			s.data.Finals[hash[i/2]].Verify() == nil,
 			fmt.Sprintf("Signature in node %d is not created", i))
 	}
 

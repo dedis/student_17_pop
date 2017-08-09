@@ -17,6 +17,7 @@ import (
 
 	"strings"
 
+	"bufio"
 	"bytes"
 
 	"github.com/BurntSushi/toml"
@@ -51,6 +52,7 @@ type Config struct {
 	name string
 }
 
+// PartyConfig represents local configuration of party
 type PartyConfig struct {
 	// Private key of attendee or organizer, depending on value
 	// of Index.
@@ -74,6 +76,7 @@ func main() {
 	appCli.Commands = []cli.Command{
 		commandOrg,
 		commandAttendee,
+		commandAuth,
 		{
 			Name:      "check",
 			Aliases:   []string{"c"},
@@ -276,14 +279,21 @@ func orgMerge(c *cli.Context) error {
 	party, err := cfg.getPartybyHash(c.Args().First())
 	log.ErrFatal(err)
 	if len(party.Final.Signature) <= 0 || party.Final.Verify() != nil {
-		log.Info("The local config is not finished yet")
-		log.Info("Fetching final statement")
+		log.Lvl2("The local config is not finished yet")
+		log.Lvl2("Fetching final statement")
 		fs, err := client.FetchFinal(cfg.Address, party.Final.Desc.Hash())
 		log.ErrFatal(err)
 		if len(fs.Signature) <= 0 || fs.Verify() != nil {
 			log.Fatal("Fetched final statement is invalid")
 		}
 		party.Final = fs
+		cfg.write()
+	}
+	if party.Final.Merged {
+		finst, err := party.Final.ToToml()
+		log.ErrFatal(err)
+		log.Info("Merged final statement:\n", "\n"+string(finst))
+		return nil
 	}
 
 	if len(party.Final.Desc.Parties) <= 0 {
@@ -335,10 +345,10 @@ func attJoin(c *cli.Context) error {
 	log.ErrFatal(err)
 	final, err := service.NewFinalStatementFromToml(buf)
 	log.ErrFatal(err)
-
+	log.Info("final.verify()", final.Verify())
 	if len(final.Signature) <= 0 || final.Verify() != nil {
-		log.Info("The local config is not finished yet")
-		log.Info("Fetching final statement")
+		log.Lvl2("The local config is not finished yet")
+		log.Lvl2("Fetching final statement")
 		// Need to get the updated version of party config
 		// Cause attendee doesn't know,
 		// whether it has finished successfully or not
@@ -351,12 +361,12 @@ func attJoin(c *cli.Context) error {
 	}
 
 	if len(final.Desc.Parties) > 0 && !final.Merged {
-		log.Info("The local party is not merged yet")
-		log.Info("Fetching final statement")
+		log.Lvl2("The local party is not merged yet")
+		log.Lvl2("Fetching final statement")
 		fs, err := client.FetchFinal(cfg.Address, final.Desc.Hash())
 		log.ErrFatal(err)
 		if !fs.Merged {
-			log.Fatal("Gloabal party is not merged")
+			log.Fatal("Global party is not merged")
 		}
 		if len(fs.Signature) <= 0 || fs.Verify() != nil {
 			log.Fatal("Fetched final statement is invalid")
@@ -379,9 +389,19 @@ func attJoin(c *cli.Context) error {
 	}
 	party.Index = index
 	hash := base64.StdEncoding.EncodeToString(final.Desc.Hash())
+	log.Infof("Final statement hash: %s", hash)
+	if !c.Bool("yes") {
+		fmt.Printf("Is it correct hash(y/n)")
+		reader := bufio.NewReader(os.Stdin)
+		input, _ := reader.ReadString('\n')
+		c := strings.ToLower(string([]byte(input)[0]))
+		if c == "n" {
+			return nil
+		}
+	}
 	cfg.Parties[hash] = party
 	cfg.write()
-	log.Infof("Stored final statement, hash: %s", hash)
+	log.Infof("Stored final statement")
 	return nil
 }
 
@@ -392,6 +412,7 @@ func attSign(c *cli.Context) error {
 	if c.NArg() < 3 {
 		log.Fatal("Please give msg, context and party hash")
 	}
+	log.Info("hash:", c.Args().Get(2))
 	party, err := cfg.getPartybyHash(c.Args().Get(2))
 	log.ErrFatal(err)
 
@@ -426,11 +447,6 @@ func attVerify(c *cli.Context) error {
 	party, err := cfg.getPartybyHash(c.Args().Get(4))
 	log.ErrFatal(err)
 
-	if party.Index == -1 || party.Private == nil || party.Public == nil ||
-		!network.Suite.Point().Mul(nil, party.Private).Equal(party.Public) {
-		log.Fatal("No public key stored. Please join a party")
-	}
-
 	if len(party.Final.Signature) < 0 || party.Final.Verify() != nil {
 		log.Fatal("Party is not finilized or signature is not valid")
 	}
@@ -442,7 +458,6 @@ func attVerify(c *cli.Context) error {
 	tag, err := base64.StdEncoding.DecodeString(c.Args().Get(3))
 	log.ErrFatal(err)
 	sigtag := append(sig, tag...)
-	log.Info("party.Final.Attendees", party.Final.Attendees)
 	ctag, err := anon.Verify(network.Suite, msg,
 		anon.Set(party.Final.Attendees), ctx, sigtag)
 	log.ErrFatal(err)
@@ -450,6 +465,55 @@ func attVerify(c *cli.Context) error {
 		log.Fatalf("Tag and calculated tag are not equal:\n%x - %x", tag, ctag)
 	}
 	log.Info("Successfully verified signature and tag")
+	return nil
+}
+
+func authStore(c *cli.Context) error {
+	log.Info("auth: store")
+	cfg, client := getConfigClient(c)
+	if c.NArg() < 1 {
+		log.Fatal("Please give a final.toml")
+	}
+
+	finalName := c.Args().First()
+	buf, err := ioutil.ReadFile(finalName)
+	log.ErrFatal(err)
+	final, err := service.NewFinalStatementFromToml(buf)
+	log.ErrFatal(err)
+
+	if len(final.Signature) <= 0 || final.Verify() != nil {
+		log.Lvl2("The local config is not finished yet")
+		log.Lvl2("Fetching final statement")
+		// Need to get the updated version of party config
+		// Cause attendee doesn't know,
+		// whether it has finished successfully or not
+		fs, err := client.FetchFinal(cfg.Address, final.Desc.Hash())
+		log.ErrFatal(err)
+		if len(fs.Signature) <= 0 || fs.Verify() != nil {
+			log.Fatal("Fetched final statement is invalid")
+		}
+		final = fs
+	}
+
+	if len(final.Desc.Parties) > 0 && !final.Merged {
+		log.Info("The local party is not merged yet")
+		log.Info("Fetching final statement")
+		fs, err := client.FetchFinal(cfg.Address, final.Desc.Hash())
+		log.ErrFatal(err)
+		if !fs.Merged {
+			log.Fatal("Global party is not merged")
+		}
+		if len(fs.Signature) <= 0 || fs.Verify() != nil {
+			log.Fatal("Fetched final statement is invalid")
+		}
+		final = fs
+	}
+	party := &PartyConfig{}
+	party.Final = final
+	hash := base64.StdEncoding.EncodeToString(final.Desc.Hash())
+	cfg.Parties[hash] = party
+	cfg.write()
+	log.Infof("Stored final statement, hash: %s", hash)
 	return nil
 }
 
@@ -503,9 +567,8 @@ func (cfg *Config) write() {
 func (cfg *Config) getPartybyHash(hash string) (*PartyConfig, error) {
 	if val, ok := cfg.Parties[hash]; ok {
 		return val, nil
-	} else {
-		return val, onet.NewClientErrorCode(service.ErrorInternal, "No such party")
 	}
+	return nil, onet.NewClientErrorCode(service.ErrorInternal, "No such party")
 }
 
 // readGroup fetches group definition file.
@@ -521,6 +584,7 @@ func readGroup(name string) *onet.Roster {
 	return roster
 }
 
+// PopDescGroupToml represents serializable party description
 type PopDescGroupToml struct {
 	Name     string
 	DateTime string

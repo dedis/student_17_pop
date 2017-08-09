@@ -35,9 +35,10 @@ main(){
 	test OrgFinal3
 	test AtJoin
 	test AtSign
+	test AuthStore
 	test AtVerify
 	test AtMultipleKey
-	#test Merge
+	test Merge
 	stopTest
 }
 
@@ -45,18 +46,22 @@ testMerge(){
 	MERGE_FILE="pop_merge.toml"
 	mkFinal
 
-	testFail runCl 1 attendee join ${priv[1]} final1.toml 
-	testFail runCl 2 attendee join ${priv[2]} final2.toml 
-	testFail runCl 3 attendee join ${priv[3]} final3.toml 
-	
+	testFail runCl 1 attendee join -y ${priv[1]} final1.toml
+	testFail runCl 2 attendee join -y ${priv[2]} final2.toml
+	testFail runCl 3 attendee join -y ${priv[3]} final3.toml
+
 	testFail runCl 1 org merge
 	testFail runCl 3 org merge ${pop_hash[1]}
 
+	#cat final2.toml
 	testOK runCl 1 org merge ${pop_hash[1]}
-
-	testOK runCl 1 attendee join ${priv[1]} final1.toml 
-	testOK runCl 2 attendee join ${priv[2]} final2.toml 
-	testOK runCl 3 attendee join ${priv[3]} final3.toml 
+	for i in {1..3}
+	do
+		runDbgCl 1 $i org merge ${pop_hash[$i]} | tail -n +3 > final$i.toml
+		testOK runCl $i attendee join -y ${priv[$i]} final$i.toml
+		runDbgCl 1 $i attendee join -y ${priv[$i]} final$i.toml > pop_hash_file
+		pop_hash[$i]=$(grep hash: pop_hash_file | sed -e "s/.* //")
+	done
 
 	for i in {1..3}; do
 		runDbgCl 1 $i attendee sign msg1 ctx1 ${pop_hash[$i]} | tee sign$i.toml
@@ -92,15 +97,15 @@ testAtMultipleKey(){
 	runCl 2 org public ${pub[3]} ${pop_hash[2]}
 
 	runCl 1 org final  ${pop_hash[1]}
-	runDbgCl 1 2 org final  ${pop_hash[1]} | tail > final1.toml
+	runDbgCl 1 2 org final  ${pop_hash[1]} | tail -n +3 > final1.toml
 	runCl 1 org final  ${pop_hash[2]}
-	runDbgCl 1 2 org final  ${pop_hash[2]} | tail > final2.toml
+	runDbgCl 1 2 org final  ${pop_hash[2]} | tail -n +3 > final2.toml
 
 
-	testOK runCl 1 attendee join ${priv[1]} final1.toml
-	testOK runCl 1 attendee join ${priv[2]} final2.toml
-	testOK runCl 2 attendee join ${priv[3]} final2.toml
- 
+	testOK runCl 1 attendee join -y ${priv[1]} final1.toml
+	testOK runCl 1 attendee join -y ${priv[2]} final2.toml
+	testOK runCl 2 attendee join -y ${priv[3]} final2.toml
+
 	runDbgCl 1 1 attendee sign msg1 ctx1 ${pop_hash[1]} > sign.toml
 	tag[1]=$( grep Tag: sign.toml | sed -e "s/.* //")
 	sig[1]=$( grep Signature: sign.toml | sed -e "s/.* //")
@@ -122,7 +127,6 @@ testAtMultipleKey(){
 	testFail runCl 1 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} ${pop_hash[1]}
 	testFail runCl 1 attendee verify msg1 ctx1 ${sig[1]} ${tag[1]} ${pop_hash[2]}
 	testFail runCl 2 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} ${pop_hash[1]}
-	testFail runCl 2 attendee verify msg1 ctx1 ${sig[1]} ${tag[1]} ${pop_hash[1]}
 	testOK runCl 1 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} ${pop_hash[2]}
 	testOK runCl 2 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} ${pop_hash[2]}
 }
@@ -140,9 +144,14 @@ testAtVerify(){
 	testFail runCl 2 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} ${pop_hash[2]}
 	testOK runCl 3 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} ${pop_hash[3]}
 
-	testFail runCl 1 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} ${pop_hash[3]}
-	testOK runCl 1 attendee join ${priv[1]} final3.toml
 	testOK runCl 1 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} ${pop_hash[3]}
+}
+
+testAuthStore(){
+	mkFinal
+	testFail runCl 1 auth store
+	testOK runCl 1 auth store final1.toml
+	testGrep "Stored" echo $(runDbgCl 1 1 auth store final1.toml)
 }
 
 tag=()
@@ -160,7 +169,7 @@ testAtSign(){
 	mkFinal
 	testFail runCl 1 attendee sign msg1 ctx1 ${pop_hash[1]}
 	for i in {1..3}; do
-		runDbgCl 1 $i attendee join ${priv[$i]} final$i.toml > pop_hash_file
+		runDbgCl 1 $i attendee join -y ${priv[$i]} final$i.toml > pop_hash_file
 		pop_hash[$i]=$(grep hash: pop_hash_file | sed -e "s/.* //")
 	done
 	testFail runCl 1 attendee sign
@@ -173,7 +182,7 @@ testAtSign(){
 mkAtJoin(){
 	mkFinal
 	for i in {1..3}; do
-		runCl $i attendee join ${priv[$i]} final$i.toml
+		runCl $i attendee join -y ${priv[$i]} final$i.toml
 	done
 }
 
@@ -192,7 +201,7 @@ testAtJoin(){
 	runCl 3 org public ${pub[1]} ${pop_hash[2]}
 
 	# check that fails without finalization
-	testFail runCl 1 attendee join ${priv[1]} ${pop_hash[1]}
+	testFail runCl 1 attendee join -y ${priv[1]} ${pop_hash[1]}
 
 	runCl 1 org final  ${pop_hash[1]}
 	runDbgCl 1 2 org final  ${pop_hash[1]} | tail > final1.toml
@@ -201,13 +210,15 @@ testAtJoin(){
 	runCl 3 org final  ${pop_hash[3]}
 	runDbgCl 1 1 org final  ${pop_hash[3]} | tail > final3.toml
 
-	testFail runCl 1 attendee join
-	testFail runCl 1 attendee join ${priv[1]}
-	testFail runCl 1 attendee join badkey final1.toml
-	testFail runCl 1 attendee join ${priv[1]} final3.toml
-	testOK runCl 1 attendee join ${priv[1]} final1.toml
-	testOK runCl 2 attendee join ${priv[2]} final2.toml
-	testOK runCl 3 attendee join ${priv[3]} final3.toml
+	testFail runCl 1 attendee join -y
+	testFail runCl 1 attendee join -y ${priv[1]}
+	testFail runCl 1 attendee join -y badkey final1.toml
+	testFail runCl 1 attendee join -y ${priv[1]} final3.toml
+	testOK runCl 1 attendee join -y ${priv[1]} final1.toml
+	testOK runCl 2 attendee join -y ${priv[2]} final2.toml
+	testOK runCl 3 attendee join -y ${priv[3]} final3.toml
+	runDbgCl 1 1 attendee join -y ${priv[1]} final1.toml > tmp_file
+	testGrep "hash" cat tmp_file
 }
 
 mkFinal(){
@@ -225,11 +236,11 @@ mkFinal(){
 	runCl 3 org public ${pub[1]} ${pop_hash[3]}
 
 	runCl 1 org final  ${pop_hash[1]}
-	runDbgCl 1 2 org final  ${pop_hash[1]} | tail > final1.toml
+	runDbgCl 1 2 org final  ${pop_hash[1]} | tail -n +3 > final1.toml
 	runCl 2 org final  ${pop_hash[2]}
-	runDbgCl 1 3 org final  ${pop_hash[2]} | tail > final2.toml
+	runDbgCl 1 3 org final  ${pop_hash[2]} | tail -n +3> final2.toml
 	runCl 3 org final  ${pop_hash[3]}
-	runDbgCl 1 1 org final  ${pop_hash[3]} | tail > final3.toml
+	runDbgCl 1 1 org final  ${pop_hash[3]} | tail -n +3 > final3.toml
 }
 
 testOrgFinal3(){
@@ -374,7 +385,7 @@ EOF
 			sed -n "$((4*$m-3)),$((4*$m))p" public.toml >> pop_desc$n.toml
 		fi
 	done
-	
+
 	for (( n=1; n<=$2; n++ ))
 	do
 		cat << EOF >> pop_merge.toml

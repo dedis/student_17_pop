@@ -87,18 +87,18 @@ type saveData struct {
 	// The final statements
 	Finals map[string]*FinalStatement
 	// The meta info used in merge process
-	MergeMetas map[string]*MergeMeta
+	mergeMetas map[string]*mergeMeta
 }
 
-type MergeMeta struct {
+type mergeMeta struct {
 	// Map of final statements of parties that are going to be merged together
 	statementsMap map[string]*FinalStatement
 	// Flag tells that message distribution has already started
 	distrib bool
 }
 
-func newMergeMeta() *MergeMeta {
-	mm := &MergeMeta{}
+func newmergeMeta() *mergeMeta {
+	mm := &mergeMeta{}
 	mm.statementsMap = make(map[string]*FinalStatement)
 	mm.distrib = false
 	return mm
@@ -134,10 +134,10 @@ func (s *Service) StoreConfig(req *StoreConfig) (network.Message, onet.ClientErr
 	hash := req.Desc.Hash()
 	s.data.Finals[string(hash)] = &FinalStatement{Desc: req.Desc, Signature: []byte{}}
 	if len(req.Desc.Parties) > 0 {
-		mergeMeta := newMergeMeta()
-		s.data.MergeMetas[string(hash)] = mergeMeta
+		meta := newmergeMeta()
+		s.data.mergeMetas[string(hash)] = meta
 		// party is merged with itself already
-		mergeMeta.statementsMap[string(hash)] = s.data.Finals[string(hash)]
+		meta.statementsMap[string(hash)] = s.data.Finals[string(hash)]
 	}
 	s.save()
 	return &StoreConfigReply{hash}, nil
@@ -233,32 +233,34 @@ func (s *Service) PropagateFinal(msg network.Message) {
 func (s *Service) FetchFinal(req *FetchRequest) (network.Message,
 	onet.ClientError) {
 	log.Lvlf2("FetchFinal: %s %v", s.Context.ServerIdentity(), req.ID)
-	if fs, ok := s.data.Finals[string(req.ID)]; !ok {
+	var fs *FinalStatement
+	var ok bool
+	if fs, ok = s.data.Finals[string(req.ID)]; !ok {
 		return nil, onet.NewClientErrorCode(ErrorInternal,
 			"No config found")
-	} else {
-		if len(fs.Signature) <= 0 {
-			return nil, onet.NewClientErrorCode(ErrorOtherFinals,
-				"Not all other conodes finalized yet")
-		} else {
-			return &FinalizeResponse{fs}, nil
-		}
 	}
+	if len(fs.Signature) <= 0 {
+		return nil, onet.NewClientErrorCode(ErrorOtherFinals,
+			"Not all other conodes finalized yet")
+	}
+	return &FinalizeResponse{fs}, nil
 }
 
+// MergeRequest starts Merge process and returns FinalStatement after
+// used after finalization
 func (s *Service) MergeRequest(req *MergeRequest) (network.Message,
 	onet.ClientError) {
 	log.Lvlf2("MergeRequest: %s %v", s.Context.ServerIdentity(), req.ID)
 	var final *FinalStatement
-	var mergeMeta *MergeMeta
+	var meta *mergeMeta
 	var ok bool
 	if final, ok = s.data.Finals[string(req.ID)]; !ok {
 		return nil, onet.NewClientErrorCode(ErrorInternal,
 			"No config found")
 	}
-	if mergeMeta, ok = s.data.MergeMetas[string(req.ID)]; !ok {
+	if meta, ok = s.data.mergeMetas[string(req.ID)]; !ok {
 		return nil, onet.NewClientErrorCode(ErrorInternal,
-			"No mergeMeta found")
+			"No meta found")
 	}
 	if len(final.Signature) <= 0 || final.Verify() != nil {
 		return nil, onet.NewClientErrorCode(ErrorOtherFinals,
@@ -267,6 +269,9 @@ func (s *Service) MergeRequest(req *MergeRequest) (network.Message,
 	if len(final.Desc.Parties) <= 1 {
 		return nil, onet.NewClientErrorCode(ErrorInternal,
 			"Party is unmergeable")
+	}
+	if final.Merged {
+		return &FinalizeResponse{final}, nil
 	}
 	// Check if the party is the merge list
 	found := false
@@ -281,7 +286,7 @@ func (s *Service) MergeRequest(req *MergeRequest) (network.Message,
 			"Party is not included in merge list")
 	}
 	// trigger merging process
-	return s.Merge(final, mergeMeta)
+	return s.Merge(final, meta)
 }
 
 // MergeConfig recieves a final statement of requesting party,
@@ -301,13 +306,13 @@ func (s *Service) MergeConfig(req *network.Envelope) {
 	}
 	mcr := &MergeConfigReply{PopStatusOK, mc.Final.Desc.Hash(), nil}
 	var final *FinalStatement
-	var mergeMeta *MergeMeta
+	var meta *mergeMeta
 	if final, ok = s.data.Finals[string(mc.ID)]; !ok {
 		log.Errorf("No config found")
 		mcr.PopStatus = PopStatusWrongHash
 		goto send
 	}
-	if mergeMeta, ok = s.data.MergeMetas[string(mc.ID)]; !ok {
+	if meta, ok = s.data.mergeMetas[string(mc.ID)]; !ok {
 		log.Error("No merge set found")
 		mcr.PopStatus = PopStatusWrongHash
 		goto send
@@ -316,13 +321,13 @@ func (s *Service) MergeConfig(req *network.Envelope) {
 	if mcr.PopStatus < PopStatusOK {
 		goto send
 	}
-	if _, ok = mergeMeta.statementsMap[string(mc.Final.Desc.Hash())]; ok {
+	if _, ok = meta.statementsMap[string(mc.Final.Desc.Hash())]; ok {
 		log.Lvl2(s.ServerIdentity(), "Party was already merged, sent from",
 			req.ServerIdentity.String())
 		mcr.PopStatus = PopStatusMergeError
 		goto send
 	} else {
-		mergeMeta.statementsMap[string(mc.Final.Desc.Hash())] = mc.Final
+		meta.statementsMap[string(mc.Final.Desc.Hash())] = mc.Final
 	}
 
 	mcr.Final = final
@@ -337,12 +342,13 @@ send:
 		return
 	}
 	// send merge info to other parties nodes
-	_, err = s.Merge(final, mergeMeta)
+	_, err = s.Merge(final, meta)
 	if err != nil {
 		log.Errorf("%s Merge error %s", s.ServerIdentity(), err.Error())
 	}
 }
 
+// MergeConfigReply processes the response after MergeConfig message
 func (s Service) MergeConfigReply(req *network.Envelope) {
 	log.Lvlf2("MergeConfigReply: %s from %s got %v",
 		s.ServerIdentity(), req.ServerIdentity.String(), req.Msg)
@@ -434,6 +440,7 @@ func (s *Service) CheckConfigReply(req *network.Envelope) {
 	}
 }
 
+// MergeCheck propagates the finalStatement among the fellows of one party
 func (s *Service) MergeCheck(req *network.Envelope) {
 	msg, ok := req.Msg.(*MergeCheck)
 	log.Lvlf2("%s recieved MergeCheck %+v from %s", s.ServerIdentity(), msg, req.ServerIdentity.String())
@@ -494,11 +501,11 @@ func (s *Service) MergeCheck(req *network.Envelope) {
 	s.save()
 }
 
-func (s *Service) sendToPartyFellows(final *FinalStatement, mergeMeta *MergeMeta) error {
+func (s *Service) sendToPartyFellows(final *FinalStatement, meta *mergeMeta) error {
 	msg := &MergeCheck{final.Desc.Hash(), []FinalStatement{}}
-	msg.MergeInfo = make([]FinalStatement, len(mergeMeta.statementsMap))
+	msg.MergeInfo = make([]FinalStatement, len(meta.statementsMap))
 	i := 0
-	for _, f := range mergeMeta.statementsMap {
+	for _, f := range meta.statementsMap {
 		msg.MergeInfo[i] = *f
 		i++
 	}
@@ -513,17 +520,17 @@ func (s *Service) sendToPartyFellows(final *FinalStatement, mergeMeta *MergeMeta
 	return nil
 }
 
-// Sends MergeConfig to all parties,
+// Merge sends MergeConfig to all parties,
 // Receives Replies, updates info about global merge party
 // When all merge party's info is saved, merge it and starts global sighning process
 // After all, sends StoreConfig request to other conodes of own party
-func (s *Service) Merge(final *FinalStatement, mergeMeta *MergeMeta) (*FinalizeResponse, onet.ClientError) {
-	if mergeMeta.distrib {
+func (s *Service) Merge(final *FinalStatement, meta *mergeMeta) (*FinalizeResponse, onet.ClientError) {
+	if meta.distrib {
 		log.Lvl2(s.ServerIdentity(), "Not enter merge")
 		return &FinalizeResponse{final}, nil
 	}
 	log.Lvl2("Merge ", s.ServerIdentity())
-	mergeMeta.distrib = true
+	meta.distrib = true
 	// Flag indicating that there were connection with other nodes
 	for _, party := range final.Desc.Parties {
 		popDesc := PopDesc{
@@ -534,7 +541,7 @@ func (s *Service) Merge(final *FinalStatement, mergeMeta *MergeMeta) (*FinalizeR
 			Parties:  final.Desc.Parties,
 		}
 		hash := popDesc.Hash()
-		if _, ok := mergeMeta.statementsMap[string(hash)]; ok {
+		if _, ok := meta.statementsMap[string(hash)]; ok {
 			continue
 		}
 		mc := &MergeConfig{Final: final, ID: hash}
@@ -550,19 +557,19 @@ func (s *Service) Merge(final *FinalStatement, mergeMeta *MergeMeta) (*FinalizeR
 					"Error during merging")
 			}
 			if mcr.PopStatus == PopStatusOK {
-				mergeMeta.statementsMap[string(mcr.Final.Desc.Hash())] = mcr.Final
+				meta.statementsMap[string(mcr.Final.Desc.Hash())] = mcr.Final
 				break
 			}
 		}
 	}
 	// send merge info to fellows from the same party
-	err := s.sendToPartyFellows(final, mergeMeta)
+	err := s.sendToPartyFellows(final, meta)
 	if err != nil {
 		return nil, onet.NewClientError(err)
 	}
 	final.Signature = []byte{}
 	// Unite the lists
-	for _, f := range mergeMeta.statementsMap {
+	for _, f := range meta.statementsMap {
 		// although there must not be any intersection
 		// in attendies list it's better to check it
 		// not simply extend the list
@@ -599,7 +606,7 @@ func (s *Service) Merge(final *FinalStatement, mergeMeta *MergeMeta) (*FinalizeR
 	return &FinalizeResponse{final}, nil
 }
 
-// Checks that received mergeFinal is valid and can be merged with final
+// VerifyMergeStatement checks that received mergeFinal is valid and can be merged with final
 func (final *FinalStatement) VerifyMergeStatement(mergeFinal *FinalStatement) int {
 	if len(final.Signature) <= 0 || final.Verify() != nil {
 		log.Error("Not all other conodes finalized yet")
@@ -756,8 +763,8 @@ func newService(c *onet.Context) onet.Service {
 	if s.data.Finals == nil {
 		s.data.Finals = make(map[string]*FinalStatement)
 	}
-	if s.data.MergeMetas == nil {
-		s.data.MergeMetas = make(map[string]*MergeMeta)
+	if s.data.mergeMetas == nil {
+		s.data.mergeMetas = make(map[string]*mergeMeta)
 	}
 	var err error
 	s.Propagate, err = messaging.NewPropagationFunc(c, "PoPPropagate", s.PropagateFinal)
