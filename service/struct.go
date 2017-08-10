@@ -6,6 +6,7 @@ This holds the messages used to communicate with the service over the network.
 
 import (
 	"gopkg.in/dedis/crypto.v0/abstract"
+	"gopkg.in/dedis/onet.v1/crypto"
 	"gopkg.in/dedis/onet.v1/network"
 )
 
@@ -82,7 +83,8 @@ type PinRequest struct {
 // StoreConfig presents a config to store
 // TODO: sign this with the private key of the linked app
 type StoreConfig struct {
-	Desc *PopDesc
+	Desc      *PopDesc
+	Signature crypto.SchnorrSig
 }
 
 // StoreConfigReply gives back the hash.
@@ -97,6 +99,26 @@ type StoreConfigReply struct {
 type FinalizeRequest struct {
 	DescID    []byte
 	Attendees []abstract.Point
+	Signature crypto.SchnorrSig
+}
+
+func (fr *FinalizeRequest) Hash() ([]byte, error) {
+	h := network.Suite.Hash()
+	_, err := h.Write(fr.DescID)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range fr.Attendees {
+		b, err := a.MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
+		_, err = h.Write(b)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return h.Sum(nil), nil
 }
 
 // FinalizeResponse returns the FinalStatement if all conodes already received
@@ -113,5 +135,6 @@ type FetchRequest struct {
 
 // MergeRequest asks to start merging process for given Party
 type MergeRequest struct {
-	ID []byte
+	ID        []byte
+	Signature crypto.SchnorrSig
 }

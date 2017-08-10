@@ -38,6 +38,7 @@ import (
 	"gopkg.in/dedis/crypto.v0/abstract"
 	"gopkg.in/dedis/crypto.v0/random"
 	"gopkg.in/dedis/onet.v1"
+	"gopkg.in/dedis/onet.v1/crypto"
 	"gopkg.in/dedis/onet.v1/log"
 	"gopkg.in/dedis/onet.v1/network"
 )
@@ -132,6 +133,9 @@ func (s *Service) StoreConfig(req *StoreConfig) (network.Message, onet.ClientErr
 		return nil, onet.NewClientErrorCode(ErrorInternal, "Not linked yet")
 	}
 	hash := req.Desc.Hash()
+	if err := crypto.VerifySchnorr(network.Suite, s.data.Public, hash, req.Signature); err != nil {
+		return nil, onet.NewClientErrorCode(ErrorInternal, "Invalid signature"+err.Error())
+	}
 	s.data.Finals[string(hash)] = &FinalStatement{Desc: req.Desc, Signature: []byte{}}
 	if len(req.Desc.Parties) > 0 {
 		meta := newmergeMeta()
@@ -151,6 +155,14 @@ func (s *Service) FinalizeRequest(req *FinalizeRequest) (network.Message, onet.C
 	if s.data.Public == nil {
 		return nil, onet.NewClientErrorCode(ErrorInternal, "Not linked yet")
 	}
+	hash, err := req.Hash()
+	if err != nil {
+		return nil, onet.NewClientError(err)
+	}
+	if err := crypto.VerifySchnorr(network.Suite, s.data.Public, hash, req.Signature); err != nil {
+		return nil, onet.NewClientErrorCode(ErrorInternal, "Invalid signature:"+err.Error())
+	}
+
 	var final *FinalStatement
 	var ok bool
 	if final, ok = s.data.Finals[string(req.DescID)]; !ok || final == nil || final.Desc == nil {
@@ -251,6 +263,14 @@ func (s *Service) FetchFinal(req *FetchRequest) (network.Message,
 func (s *Service) MergeRequest(req *MergeRequest) (network.Message,
 	onet.ClientError) {
 	log.Lvlf2("MergeRequest: %s %v", s.Context.ServerIdentity(), req.ID)
+	if s.data.Public == nil {
+		return nil, onet.NewClientErrorCode(ErrorInternal, "Not linked yet")
+	}
+
+	if err := crypto.VerifySchnorr(network.Suite, s.data.Public, req.ID, req.Signature); err != nil {
+		return nil, onet.NewClientErrorCode(ErrorInternal, "Invalid signature: err")
+	}
+
 	var final *FinalStatement
 	var meta *mergeMeta
 	var ok bool
@@ -262,6 +282,7 @@ func (s *Service) MergeRequest(req *MergeRequest) (network.Message,
 		return nil, onet.NewClientErrorCode(ErrorInternal,
 			"No meta found")
 	}
+
 	if len(final.Signature) <= 0 || final.Verify() != nil {
 		return nil, onet.NewClientErrorCode(ErrorOtherFinals,
 			"Not all other conodes finalized yet")

@@ -41,8 +41,11 @@ func init() {
 
 // Config represents either a manager or an attendee configuration.
 type Config struct {
-	// Public key of org. Used for linking
+	// Public key of org. Used for linking and
+	// org authentication
 	OrgPublic abstract.Point
+	// Private key of org. Used for authentication
+	OrgPrivate abstract.Scalar
 	// Address of the linked conode.
 	Address network.Address
 	// Map of Final statements of the parties.
@@ -178,7 +181,7 @@ func orgConfig(c *cli.Context) error {
 	hash := base64.StdEncoding.EncodeToString(desc.Hash())
 	log.Infof("Hash of config: %s", hash)
 	//log.ErrFatal(check.Servers(group), "Couldn't check servers")
-	log.ErrFatal(client.StoreConfig(cfg.Address, desc))
+	log.ErrFatal(client.StoreConfig(cfg.Address, desc, cfg.OrgPrivate))
 	if val, ok := cfg.Parties[hash]; !ok {
 		kp := config.NewKeyPair(network.Suite)
 		cfg.Parties[hash] = &PartyConfig{
@@ -256,7 +259,8 @@ func orgFinal(c *cli.Context) error {
 		log.Info("Final statement already here:\n", "\n"+string(finst))
 		return nil
 	}
-	fs, cerr := client.Finalize(cfg.Address, party.Final.Desc, party.Final.Attendees)
+	fs, cerr := client.Finalize(cfg.Address, party.Final.Desc,
+		party.Final.Attendees, cfg.OrgPrivate)
 	log.ErrFatal(cerr)
 	party.Final = fs
 	cfg.write()
@@ -295,11 +299,11 @@ func orgMerge(c *cli.Context) error {
 		log.Info("Merged final statement:\n", "\n"+string(finst))
 		return nil
 	}
-
 	if len(party.Final.Desc.Parties) <= 0 {
 		log.Fatal("there is no parties to merge")
 	}
-	fs, err := client.Merge(cfg.Address, party.Final.Desc)
+
+	fs, err := client.Merge(cfg.Address, party.Final.Desc, cfg.OrgPrivate)
 	if err != nil {
 		return err
 	}
@@ -531,9 +535,10 @@ func newConfig(fileConfig string) (*Config, error) {
 	if _, err := os.Stat(name); err != nil {
 		kp := config.NewKeyPair(network.Suite)
 		return &Config{
-			OrgPublic: kp.Public,
-			Parties:   make(map[string]*PartyConfig),
-			name:      name,
+			OrgPublic:  kp.Public,
+			OrgPrivate: kp.Secret,
+			Parties:    make(map[string]*PartyConfig),
+			name:       name,
 		}, nil
 	}
 	buf, err := ioutil.ReadFile(name)

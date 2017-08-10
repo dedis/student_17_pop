@@ -54,9 +54,13 @@ func (c *Client) PinRequest(dst network.Address, pin string, pub abstract.Point)
 }
 
 // StoreConfig sends the configuration to the conode for later usage.
-func (c *Client) StoreConfig(dst network.Address, p *PopDesc) onet.ClientError {
+func (c *Client) StoreConfig(dst network.Address, p *PopDesc, priv abstract.Scalar) onet.ClientError {
 	si := &network.ServerIdentity{Address: dst}
-	err := c.SendProtobuf(si, &StoreConfig{p}, nil)
+	sg, e := crypto.SignSchnorr(network.Suite, priv, p.Hash())
+	if e != nil {
+		return onet.NewClientError(e)
+	}
+	err := c.SendProtobuf(si, &StoreConfig{p, sg}, nil)
 	if err != nil {
 		return err
 	}
@@ -81,24 +85,42 @@ func (c *Client) FetchFinal(dst network.Address, hash []byte) (
 // not in all the conodes will be stripped, and that new pop-description
 // collectively signed. The new pop-description and the final statement
 // will be returned.
-func (c *Client) Finalize(dst network.Address, p *PopDesc, attendees []abstract.Point) (
-	*FinalStatement, onet.ClientError) {
+func (c *Client) Finalize(dst network.Address, p *PopDesc, attendees []abstract.Point,
+	priv abstract.Scalar) (*FinalStatement, onet.ClientError) {
 	si := &network.ServerIdentity{Address: dst}
-	res := &FinalizeResponse{}
-	err := c.SendProtobuf(si, &FinalizeRequest{p.Hash(), attendees}, res)
+	req := &FinalizeRequest{}
+	req.DescID = p.Hash()
+	req.Attendees = attendees
+	hash, err := req.Hash()
 	if err != nil {
-		return nil, err
+		return nil, onet.NewClientError(err)
+	}
+	res := &FinalizeResponse{}
+	sg, err := crypto.SignSchnorr(network.Suite, priv, hash)
+	if err != nil {
+		return nil, onet.NewClientError(err)
+	}
+	req.Signature = sg
+	e := c.SendProtobuf(si, req, res)
+	if e != nil {
+		return nil, e
 	}
 	return res.Final, nil
 }
 
-func (c *Client) Merge(dst network.Address, p *PopDesc) (
+func (c *Client) Merge(dst network.Address, p *PopDesc, priv abstract.Scalar) (
 	*FinalStatement, onet.ClientError) {
 	si := &network.ServerIdentity{Address: dst}
 	res := &FinalizeResponse{}
-	err := c.SendProtobuf(si, &MergeRequest{p.Hash()}, res)
+	hash := p.Hash()
+	sg, err := crypto.SignSchnorr(network.Suite, priv, hash)
 	if err != nil {
-		return nil, err
+		return nil, onet.NewClientError(err)
+	}
+
+	e := c.SendProtobuf(si, &MergeRequest{hash, sg}, res)
+	if e != nil {
+		return nil, e
 	}
 	return res.Final, nil
 }
