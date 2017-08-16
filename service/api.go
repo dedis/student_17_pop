@@ -26,6 +26,9 @@ const (
 	// ErrorMerge indicates that other parties have not recieved
 	// the merge request yet
 	ErrorMerge
+	// ErrorTimeout indicates that waiting on network was too long
+	// Either node is down or network is partitioned
+	ErrorTimeout
 )
 
 func init() {
@@ -176,7 +179,7 @@ func NewFinalStatementFromToml(b []byte) (*FinalStatement, error) {
 		mparties[i] = &ShortDesc{}
 		mparties[i].Location = desc.Location
 
-		sis = sis[:0]
+		sis := []*network.ServerIdentity{}
 		for _, s := range desc.Roster {
 			uid, err := uuid.FromString(s[2])
 			if err != nil {

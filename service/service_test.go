@@ -75,7 +75,7 @@ func TestService_StoreConfig(t *testing.T) {
 	require.True(t, ok)
 }
 
-func TestService_CheckConfig(t *testing.T) {
+func TestService_CheckConfigMessage(t *testing.T) {
 	local := onet.NewTCPTest()
 	defer local.CloseAll()
 	nodes, r, _ := local.GenTree(2, true)
@@ -89,17 +89,22 @@ func TestService_CheckConfig(t *testing.T) {
 	}
 	cc := &CheckConfig{[]byte{}, atts}
 	srvcs[0].SendRaw(r.List[1], cc)
-	require.Nil(t, <-srvcs[0].ccChannel)
 	hash := string(descs[0].Hash())
+	select {
+	case <-srvcs[0].data.syncMetas[hash].ccChannel:
+		require.Fail(t, "unexpected write on channel")
+	case <-time.After(TIMEOUT / 60):
+		break
+	}
 	cc.PopHash = []byte(hash)
 	srvcs[0].SendRaw(r.List[1], cc)
-	require.NotNil(t, <-srvcs[0].ccChannel)
+	require.NotNil(t, <-srvcs[0].data.syncMetas[hash].ccChannel)
 	require.Equal(t, 2, len(srvcs[0].data.Finals[hash].Attendees))
 	require.Equal(t, 2, len(srvcs[1].data.Finals[hash].Attendees))
 
 	cc.Attendees = atts[:1]
 	srvcs[0].SendRaw(r.List[1], cc)
-	require.NotNil(t, <-srvcs[0].ccChannel)
+	require.NotNil(t, <-srvcs[0].data.syncMetas[hash].ccChannel)
 	require.Equal(t, 1, len(srvcs[0].data.Finals[hash].Attendees))
 	require.Equal(t, 1, len(srvcs[1].data.Finals[hash].Attendees))
 }
@@ -122,19 +127,19 @@ func TestService_CheckConfigReply(t *testing.T) {
 		}
 
 		s0.CheckConfigReply(req)
-		<-s0.ccChannel
+		<-s0.data.syncMetas[hash].ccChannel
 		require.Equal(t, 2, len(s0.data.Finals[hash].Attendees))
 
 		ccr.Attendees = atts[:1]
 		req.Msg = ccr
 		s0.CheckConfigReply(req)
-		<-s0.ccChannel
+		<-s0.data.syncMetas[hash].ccChannel
 		require.Equal(t, 2, len(s0.data.Finals[hash].Attendees))
 
 		ccr.PopStatus = PopStatusOK + 1
 		req.Msg = ccr
 		s0.CheckConfigReply(req)
-		<-s0.ccChannel
+		<-s0.data.syncMetas[hash].ccChannel
 		require.Equal(t, 1, len(s0.data.Finals[hash].Attendees))
 	}
 }
@@ -262,7 +267,7 @@ func TestService_MergeConfig(t *testing.T) {
 	hash[1] = string(descs[1].Hash())
 	cc := &MergeConfig{srvcs[0].data.Finals[hash[0]], []byte{}}
 	srvcs[0].SendRaw(r.List[1], cc)
-	mcr := <-srvcs[0].mcChannel
+	mcr := <-srvcs[0].data.syncMetas[hash[0]].mcChannel
 	require.NotNil(t, mcr)
 	require.Nil(t, mcr.Final)
 	require.Equal(t, PopStatusWrongHash, mcr.PopStatus)
@@ -271,7 +276,7 @@ func TestService_MergeConfig(t *testing.T) {
 
 	cc.ID = []byte(hash[1])
 	srvcs[0].SendRaw(r.List[2], cc)
-	mcr = <-srvcs[0].mcChannel
+	mcr = <-srvcs[0].data.syncMetas[hash[0]].mcChannel
 	require.NotNil(t, mcr)
 	require.Nil(t, mcr.Final)
 	require.Equal(t, PopStatusMergeNonFinalized, mcr.PopStatus)
@@ -306,41 +311,13 @@ func TestService_MergeConfig(t *testing.T) {
 	cc.Final = srvcs[0].data.Finals[hash[0]]
 	cc.ID = []byte(hash[1])
 	srvcs[0].SendRaw(r.List[2], cc)
-
-	for i, s := range srvcs {
-		if i < 2 {
-			continue
-		}
-		Eventually(t, func() bool { return s.data.Finals[hash[i/2]].Merged },
-			fmt.Sprintf("Server %d not Merged", i))
-	}
-	for i, s := range srvcs {
-		if i != 2 {
-			continue
-		}
-		meta := s.data.mergeMetas[hash[i/2]]
-		require.Equal(t, len(meta.statementsMap), len(descs),
-			fmt.Sprintf("Server %d statementsMap", i))
-	}
-
-	for i, s := range srvcs {
-		// first party servers won't merge because it started process via MergeConfig
-		// not MergeRequest
-		if i < 2 {
-			continue
-		}
-		require.Equal(t, len(s.data.Finals[hash[i/2]].Attendees),
-			nbrAtt,
-			fmt.Sprintf("Server %d attendees not merged", i))
-		require.Equal(t,
-			len(s.data.Finals[hash[i/2]].Desc.Roster.List),
-			nbrNodes,
-			fmt.Sprintf("Server %d conodes not merged", i))
-
-		require.True(t, len(s.data.Finals[hash[i/2]].Signature) > 0 &&
-			s.data.Finals[hash[i/2]].Verify() == nil,
-			fmt.Sprintf("Signature in node %d is not created", i))
-	}
+	meta := srvcs[2].data.mergeMetas[hash[1]]
+	// Here is involuntary race condition solved by waiting in cycle
+	// on timeout
+	// In this case I can't wait till the end of process because
+	// I test here only one message
+	Eventually(t, func() bool { return len(meta.statementsMap) == len(descs) },
+		fmt.Sprintf("Server %d statementsMap", 2))
 }
 
 func TestService_MergeRequest(t *testing.T) {
@@ -399,6 +376,7 @@ func TestService_MergeRequest(t *testing.T) {
 	mr.Signature = sg
 	_, err = srvcs[0].MergeRequest(mr)
 	require.NotNil(t, err)
+	//log.SetDebugVisible(2)
 	log.Lvlf2("Group 1, Server: %s", srvcs[0].ServerIdentity())
 	log.Lvlf2("Group 1, Server: %s", srvcs[1].ServerIdentity())
 	log.Lvlf2("Group 2, Server: %s", srvcs[2].ServerIdentity())
@@ -413,15 +391,6 @@ func TestService_MergeRequest(t *testing.T) {
 	for i, s := range srvcs {
 		Eventually(t, func() bool { return s.data.Finals[hash[i/2]].Merged },
 			fmt.Sprintf("Server %d not Merged", i))
-	}
-	for i, s := range srvcs {
-		if i == 1 || i == 3 {
-			// they don't update statementsMap
-			continue
-		}
-		meta := s.data.mergeMetas[hash[i/2]]
-		require.Equal(t, len(meta.statementsMap), len(descs),
-			fmt.Sprintf("Server %d statementsMap", i))
 	}
 
 	for i, s := range srvcs {
@@ -444,9 +413,9 @@ func storeDesc(srvcs []onet.Service, el *onet.Roster, nbr int,
 	descs := make([]*PopDesc, nprts)
 	for i := range descs {
 		descs[i] = &PopDesc{
-			Name:     "test" + string(i),
+			Name:     "name",
 			DateTime: "2017-07-31 00:00",
-			Location: "city" + string(i),
+			Location: fmt.Sprintf("city%d", i),
 			Roster:   onet.NewRoster(el.List),
 		}
 	}

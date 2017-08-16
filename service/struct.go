@@ -67,9 +67,27 @@ type MergeConfigReply struct {
 }
 
 // Message requesting fellows to merge and update their lists
+// Can't send only finalStatement after merging
+// because other nodes can't ensure
+// that no new public keys were added by initiator
+// TODO: refactor it with Propagation function
+// but in this case errors will not be handled
 type MergeCheck struct {
-	ID        []byte
+	// hash of Party on receiver
+	IDrecv []byte
+	// hash of Party on sender
+	IDsndr []byte
+	// All merge party to be merge with
 	MergeInfo []FinalStatement
+}
+
+// Message replies on MergeCheck
+// with status of merging process
+type MergeCheckReply struct {
+	// hash of Party on receiver
+	ID []byte
+	// status of merging
+	PopStatus int
 }
 
 // PinRequest will print a random pin on stdout if the pin is empty. If
@@ -81,7 +99,6 @@ type PinRequest struct {
 }
 
 // StoreConfig presents a config to store
-// TODO: sign this with the private key of the linked app
 type StoreConfig struct {
 	Desc      *PopDesc
 	Signature crypto.SchnorrSig

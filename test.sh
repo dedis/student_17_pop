@@ -2,7 +2,7 @@
 
 DBG_TEST=1
 DBG_APP=3
-NBR_CLIENTS=3
+NBR_CLIENTS=4
 NBR_SERVERS=3
 NBR_SERVERS_GROUP=$NBR_SERVERS
 . $GOPATH/src/gopkg.in/dedis/onet.v1/app/libtest.sh
@@ -44,42 +44,73 @@ main(){
 
 testMerge(){
 	MERGE_FILE="pop_merge.toml"
-	mkFinal
+	mkConfig 3 3 2 4
+
+	# att1 - p1, p2; att2 - p2; att3 - p3;
+	runCl 1 org public ${pub[1]} ${pop_hash[1]}
+	runCl 2 org public ${pub[1]} ${pop_hash[1]}
+	runCl 2 org public ${pub[2]} ${pop_hash[2]}
+	runCl 3 org public ${pub[2]} ${pop_hash[2]}
+	runCl 3 org public ${pub[3]} ${pop_hash[3]}
+	runCl 1 org public ${pub[3]} ${pop_hash[3]}
+
+	runCl 1 org public ${pub[1]} ${pop_hash[3]}
+	runCl 3 org public ${pub[1]} ${pop_hash[3]}
+
+	runCl 1 org public ${pub[4]} ${pop_hash[3]}
+	runCl 3 org public ${pub[4]} ${pop_hash[3]}
+
+	runCl 1 org final  ${pop_hash[1]}
+	runDbgCl 1 2 org final  ${pop_hash[1]} | tail -n +3 > final1.toml
+	runCl 2 org final  ${pop_hash[2]}
+	runDbgCl 1 3 org final  ${pop_hash[2]} | tail -n +3> final2.toml
+	runCl 3 org final  ${pop_hash[3]}
+	runDbgCl 1 1 org final  ${pop_hash[3]} | tail -n +3 > final3.toml
+
 
 	testFail runCl 1 attendee join -y ${priv[1]} final1.toml
 	testFail runCl 2 attendee join -y ${priv[2]} final2.toml
 	testFail runCl 3 attendee join -y ${priv[3]} final3.toml
+	testFail runCl 4 attendee join -y ${priv[3]} final3.toml
 
 	testFail runCl 1 org merge
 	testFail runCl 3 org merge ${pop_hash[1]}
 
-	#cat final2.toml
 	testOK runCl 1 org merge ${pop_hash[1]}
-	for i in {1..3}
+	runDbgCl 1 1 org merge ${pop_hash[1]} | tail -n +3 > merge_final.toml
+	cat merge_final.toml
+	for i in {1..4}
 	do
-		runDbgCl 1 $i org merge ${pop_hash[$i]} | tail -n +3 > final$i.toml
-		testOK runCl $i attendee join -y ${priv[$i]} final$i.toml
-		runDbgCl 1 $i attendee join -y ${priv[$i]} final$i.toml > pop_hash_file
-		pop_hash[$i]=$(grep hash: pop_hash_file | sed -e "s/.* //")
+		testOK runCl $i attendee join -y ${priv[$i]} merge_final.toml
 	done
+	runDbgCl 1 1 attendee join -y ${priv[1]} merge_final.toml > pop_hash_file
+	merged_hash=$(grep hash: pop_hash_file | sed -e "s/.* //")
 
-	for i in {1..3}; do
-		runDbgCl 1 $i attendee sign msg1 ctx1 ${pop_hash[$i]} | tee sign$i.toml
+	for i in {1..4}; do
+		runDbgCl 1 $i attendee sign msg1 ctx1 $merged_hash | tee sign$i.toml
 		tag[$i]=$( grep Tag: sign$i.toml | sed -e "s/.* //")
 		sig[$i]=$( grep Signature: sign$i.toml | sed -e "s/.* //")
 	done
 
-	testOK runCl 1 attendee verify msg1 ctx1 ${sig[1]} ${tag[1]} ${pop_hash[1]}
-	testOK runCl 1 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} ${pop_hash[1]}
-	testOK runCl 1 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} ${pop_hash[1]}
 
-	testOK runCl 2 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} ${pop_hash[2]}
-	testOK runCl 2 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} ${pop_hash[2]}
-	testOK runCl 2 attendee verify msg1 ctx1 ${sig[1]} ${tag[1]} ${pop_hash[2]}
+	for i in {1..4}; do
+		for j in {1..4}; do
+			testOK runCl $i attendee verify msg1 ctx1 ${sig[$j]} ${tag[$j]} $merged_hash
+		done
+	done
 
-	testOK runCl 3 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} ${pop_hash[3]}
-	testOK runCl 3 attendee verify msg1 ctx1 ${sig[1]} ${tag[1]} ${pop_hash[3]}
-	testOK runCl 3 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} ${pop_hash[3]}
+	#testOK runCl 1 attendee verify msg1 ctx1 ${sig[1]} ${tag[1]} $merged_hash
+	#testOK runCl 1 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} $merged_hash
+	#testOK runCl 1 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} $merged_hash
+	#testOK runCl 1 attendee verify msg1 ctx1 ${sig[4]} ${tag[3]} $merged_hash
+
+	#testOK runCl 2 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} $merged_hash
+	#testOK runCl 2 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} $merged_hash
+	#testOK runCl 2 attendee verify msg1 ctx1 ${sig[1]} ${tag[1]} $merged_hash
+
+	#testOK runCl 3 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} $merged_hash
+	#testOK runCl 3 attendee verify msg1 ctx1 ${sig[1]} ${tag[1]} $merged_hash
+	#testOK runCl 3 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} $merged_hash
 
 }
 
@@ -370,6 +401,7 @@ mkPopConfig(){
 	local n
 	for (( n=1; n<=$1; n++ ))
 	do
+		rm pop_desc$n.toml
 		cat << EOF > pop_desc$n.toml
 Name = "Proof-of-Personhood Party"
 DateTime = "2017-08-08 15:00 UTC"
@@ -385,7 +417,7 @@ EOF
 			sed -n "$((4*$m-3)),$((4*$m))p" public.toml >> pop_desc$n.toml
 		fi
 	done
-
+	rm pop_merge.toml
 	for (( n=1; n<=$2; n++ ))
 	do
 		cat << EOF >> pop_merge.toml
@@ -399,28 +431,6 @@ EOF
 		sed -n "$((4*$m-2)),$((4*$m))p" public.toml >> pop_merge.toml
 	done
 }
-
-# $1 number of parties $2 number of organizers
-#mkPopConfig(){
-#	local n
-#	for (( n=1; n<=$1; n++ ))
-#	do
-#		cat << EOF > pop_desc$n.toml
-#Name = "33c3 Proof-of-Personhood Party"
-#DateTime = "2016-12-29 15:00 UTC"
-#Location = "Earth, Germany, City$1, Hall A1"
-#EOF
-#	done
-#	for (( n=1; n<=$1; n++ ))
-#	do
-#		sed -n "$((4*$n-3)),$((4*$n))p" public.toml >> pop_desc$(($n%$1+1)).toml
-#		if [[ $2 -gt 1 ]]
-#		then
-#			local m=$(($n%$2 + 1))
-#			sed -n "$((4*$m-3)),$((4*$m))p" public.toml >> pop_desc$(($n%$1+1)).toml
-#		fi
-#	done
-#}
 
 testSave(){
 	runCoBG 1 2
