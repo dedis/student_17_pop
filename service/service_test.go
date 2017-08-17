@@ -91,20 +91,20 @@ func TestService_CheckConfigMessage(t *testing.T) {
 	srvcs[0].SendRaw(r.List[1], cc)
 	hash := string(descs[0].Hash())
 	select {
-	case <-srvcs[0].data.syncMetas[hash].ccChannel:
+	case <-srvcs[0].syncMetas[hash].ccChannel:
 		require.Fail(t, "unexpected write on channel")
 	case <-time.After(TIMEOUT / 60):
 		break
 	}
 	cc.PopHash = []byte(hash)
 	srvcs[0].SendRaw(r.List[1], cc)
-	require.NotNil(t, <-srvcs[0].data.syncMetas[hash].ccChannel)
+	require.NotNil(t, <-srvcs[0].syncMetas[hash].ccChannel)
 	require.Equal(t, 2, len(srvcs[0].data.Finals[hash].Attendees))
 	require.Equal(t, 2, len(srvcs[1].data.Finals[hash].Attendees))
 
 	cc.Attendees = atts[:1]
 	srvcs[0].SendRaw(r.List[1], cc)
-	require.NotNil(t, <-srvcs[0].data.syncMetas[hash].ccChannel)
+	require.NotNil(t, <-srvcs[0].syncMetas[hash].ccChannel)
 	require.Equal(t, 1, len(srvcs[0].data.Finals[hash].Attendees))
 	require.Equal(t, 1, len(srvcs[1].data.Finals[hash].Attendees))
 }
@@ -127,19 +127,19 @@ func TestService_CheckConfigReply(t *testing.T) {
 		}
 
 		s0.CheckConfigReply(req)
-		<-s0.data.syncMetas[hash].ccChannel
+		<-s0.syncMetas[hash].ccChannel
 		require.Equal(t, 2, len(s0.data.Finals[hash].Attendees))
 
 		ccr.Attendees = atts[:1]
 		req.Msg = ccr
 		s0.CheckConfigReply(req)
-		<-s0.data.syncMetas[hash].ccChannel
+		<-s0.syncMetas[hash].ccChannel
 		require.Equal(t, 2, len(s0.data.Finals[hash].Attendees))
 
 		ccr.PopStatus = PopStatusOK + 1
 		req.Msg = ccr
 		s0.CheckConfigReply(req)
-		<-s0.data.syncMetas[hash].ccChannel
+		<-s0.syncMetas[hash].ccChannel
 		require.Equal(t, 1, len(s0.data.Finals[hash].Attendees))
 	}
 }
@@ -267,7 +267,7 @@ func TestService_MergeConfig(t *testing.T) {
 	hash[1] = string(descs[1].Hash())
 	cc := &MergeConfig{srvcs[0].data.Finals[hash[0]], []byte{}}
 	srvcs[0].SendRaw(r.List[1], cc)
-	mcr := <-srvcs[0].data.syncMetas[hash[0]].mcChannel
+	mcr := <-srvcs[0].syncMetas[hash[0]].mcChannel
 	require.NotNil(t, mcr)
 	require.Nil(t, mcr.Final)
 	require.Equal(t, PopStatusWrongHash, mcr.PopStatus)
@@ -276,7 +276,7 @@ func TestService_MergeConfig(t *testing.T) {
 
 	cc.ID = []byte(hash[1])
 	srvcs[0].SendRaw(r.List[2], cc)
-	mcr = <-srvcs[0].data.syncMetas[hash[0]].mcChannel
+	mcr = <-srvcs[0].syncMetas[hash[0]].mcChannel
 	require.NotNil(t, mcr)
 	require.Nil(t, mcr.Final)
 	require.Equal(t, PopStatusMergeNonFinalized, mcr.PopStatus)
@@ -311,7 +311,7 @@ func TestService_MergeConfig(t *testing.T) {
 	cc.Final = srvcs[0].data.Finals[hash[0]]
 	cc.ID = []byte(hash[1])
 	srvcs[0].SendRaw(r.List[2], cc)
-	meta := srvcs[2].data.mergeMetas[hash[1]]
+	meta := srvcs[2].data.MergeMetas[hash[1]]
 	// Here is involuntary race condition solved by waiting in cycle
 	// on timeout
 	// In this case I can't wait till the end of process because

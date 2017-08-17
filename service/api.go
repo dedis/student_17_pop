@@ -149,13 +149,7 @@ type finalStatementToml struct {
 	Merged    bool
 }
 
-// NewFinalStatementFromToml creates a final statement from a toml slice-of-bytes.
-func NewFinalStatementFromToml(b []byte) (*FinalStatement, error) {
-	fsToml := &finalStatementToml{}
-	_, err := toml.Decode(string(b), fsToml)
-	if err != nil {
-		return nil, err
-	}
+func newFinalStatementFromTomlStruct(fsToml *finalStatementToml) (*FinalStatement, error) {
 	sis := []*network.ServerIdentity{}
 	for _, s := range fsToml.Desc.Roster {
 		uid, err := uuid.FromString(s[2])
@@ -214,8 +208,8 @@ func NewFinalStatementFromToml(b []byte) (*FinalStatement, error) {
 		}
 		atts = append(atts, pub)
 	}
-	sig := make([]byte, 64)
-	sig, err = base64.StdEncoding.DecodeString(fsToml.Signature)
+	//sig := make([]byte, 64)
+	sig, err := base64.StdEncoding.DecodeString(fsToml.Signature)
 	// TODO: sign and verify signature
 	if err != nil {
 		return nil, err
@@ -226,6 +220,55 @@ func NewFinalStatementFromToml(b []byte) (*FinalStatement, error) {
 		Signature: sig,
 		Merged:    fsToml.Merged,
 	}, nil
+}
+
+// NewFinalStatementFromToml creates a final statement from a toml slice-of-bytes.
+func NewFinalStatementFromToml(b []byte) (*FinalStatement, error) {
+	fsToml := &finalStatementToml{}
+	_, err := toml.Decode(string(b), fsToml)
+	if err != nil {
+		return nil, err
+	}
+	fs, err := newFinalStatementFromTomlStruct(fsToml)
+	if err != nil {
+		return nil, err
+	}
+	return fs, nil
+
+}
+
+func decodeMapFinal(b []byte) (map[string]*FinalStatement, error) {
+	mapToml := make(map[string]*finalStatementToml)
+	_, err := toml.Decode(string(b), &mapToml)
+	if err != nil {
+		return nil, err
+	}
+	res := make(map[string]*FinalStatement)
+	for _, fsToml := range mapToml {
+		fs, err := newFinalStatementFromTomlStruct(fsToml)
+		if err != nil {
+			return nil, err
+		}
+		res[string(fs.Desc.Hash())] = fs
+	}
+	return res, nil
+}
+
+func encodeMapFinal(stmts map[string]*FinalStatement) ([]byte, error) {
+	mapToml := make(map[string]*finalStatementToml)
+	var err error
+	for key, fs := range stmts {
+		mapToml[string(base64.StdEncoding.EncodeToString([]byte(key)))], err = fs.toTomlStruct()
+		if err != nil {
+			return nil, err
+		}
+	}
+	var buf bytes.Buffer
+	err = toml.NewEncoder(&buf).Encode(mapToml)
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func (desc *PopDesc) toToml() (*popDescToml, error) {
@@ -242,8 +285,7 @@ func (desc *PopDesc) toToml() (*popDescToml, error) {
 	return descToml, nil
 }
 
-// ToToml returns a toml-slice of byte and an eventual error.
-func (fs *FinalStatement) ToToml() ([]byte, error) {
+func (fs *FinalStatement) toTomlStruct() (*finalStatementToml, error) {
 	descToml, err := fs.Desc.toToml()
 	if err != nil {
 		return nil, err
@@ -275,6 +317,15 @@ func (fs *FinalStatement) ToToml() ([]byte, error) {
 		Attendees: atts,
 		Signature: base64.StdEncoding.EncodeToString(fs.Signature),
 		Merged:    fs.Merged,
+	}
+	return fsToml, nil
+}
+
+// ToToml returns a toml-slice of byte and an eventual error.
+func (fs *FinalStatement) ToToml() ([]byte, error) {
+	fsToml, err := fs.toTomlStruct()
+	if err != nil {
+		return nil, err
 	}
 	var buf bytes.Buffer
 	err = toml.NewEncoder(&buf).Encode(fsToml)
