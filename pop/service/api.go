@@ -29,6 +29,9 @@ const (
 	// ErrorTimeout indicates that waiting on network was too long
 	// Either node is down or network is partitioned
 	ErrorTimeout
+	// ErrorMergeInProgress indicates that there was an attempt
+	// to launch proccess twice on the same node
+	ErrorMergeInProgress
 )
 
 func init() {
@@ -150,55 +153,9 @@ type finalStatementToml struct {
 }
 
 func newFinalStatementFromTomlStruct(fsToml *finalStatementToml) (*FinalStatement, error) {
-	sis := []*network.ServerIdentity{}
-	for _, s := range fsToml.Desc.Roster {
-		uid, err := uuid.FromString(s[2])
-		if err != nil {
-			return nil, err
-		}
-		pub, err := crypto.String64ToPub(network.Suite, s[3])
-		if err != nil {
-			return nil, err
-		}
-		sis = append(sis, &network.ServerIdentity{
-			Address:     network.Address(s[0]),
-			Description: s[1],
-			ID:          network.ServerIdentityID(uid),
-			Public:      pub,
-		})
-	}
-	rostr := onet.NewRoster(sis)
-	mparties := make([]*ShortDesc, len(fsToml.Desc.Parties))
-	for i, desc := range fsToml.Desc.Parties {
-		mparties[i] = &ShortDesc{}
-		mparties[i].Location = desc.Location
-
-		sis := []*network.ServerIdentity{}
-		for _, s := range desc.Roster {
-			uid, err := uuid.FromString(s[2])
-			if err != nil {
-				return nil, err
-			}
-			pub, err := crypto.String64ToPub(network.Suite, s[3])
-			if err != nil {
-				return nil, err
-			}
-			sis = append(sis, &network.ServerIdentity{
-				Address:     network.Address(s[0]),
-				Description: s[1],
-				ID:          network.ServerIdentityID(uid),
-				Public:      pub,
-			})
-		}
-		mparties[i].Roster = onet.NewRoster(sis)
-	}
-
-	desc := &PopDesc{
-		Name:     fsToml.Desc.Name,
-		DateTime: fsToml.Desc.DateTime,
-		Location: fsToml.Desc.Location,
-		Roster:   rostr,
-		Parties:  mparties,
+	desc, err := newPopDescFromTomlStruct(fsToml.Desc)
+	if err != nil {
+		return nil, err
 	}
 	atts := []abstract.Point{}
 	for _, p := range fsToml.Attendees {
@@ -271,7 +228,7 @@ func encodeMapFinal(stmts map[string]*FinalStatement) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func (desc *PopDesc) toToml() (*popDescToml, error) {
+func (desc *PopDesc) toTomlStruct() (*popDescToml, error) {
 	rostr, err := toToml(desc.Roster)
 	if err != nil {
 		return nil, err
@@ -285,8 +242,64 @@ func (desc *PopDesc) toToml() (*popDescToml, error) {
 	return descToml, nil
 }
 
+func newPopDescFromTomlStruct(descToml *popDescToml) (*PopDesc, error) {
+	sis := []*network.ServerIdentity{}
+	if descToml == nil {
+		return nil, onet.NewClientErrorCode(ErrorInternal, "failed toml struct")
+	}
+	for _, s := range descToml.Roster {
+		uid, err := uuid.FromString(s[2])
+		if err != nil {
+			return nil, err
+		}
+		pub, err := crypto.String64ToPub(network.Suite, s[3])
+		if err != nil {
+			return nil, err
+		}
+		sis = append(sis, &network.ServerIdentity{
+			Address:     network.Address(s[0]),
+			Description: s[1],
+			ID:          network.ServerIdentityID(uid),
+			Public:      pub,
+		})
+	}
+	rostr := onet.NewRoster(sis)
+	mparties := make([]*ShortDesc, len(descToml.Parties))
+	for i, desc := range descToml.Parties {
+		mparties[i] = &ShortDesc{}
+		mparties[i].Location = desc.Location
+
+		sis := []*network.ServerIdentity{}
+		for _, s := range desc.Roster {
+			uid, err := uuid.FromString(s[2])
+			if err != nil {
+				return nil, err
+			}
+			pub, err := crypto.String64ToPub(network.Suite, s[3])
+			if err != nil {
+				return nil, err
+			}
+			sis = append(sis, &network.ServerIdentity{
+				Address:     network.Address(s[0]),
+				Description: s[1],
+				ID:          network.ServerIdentityID(uid),
+				Public:      pub,
+			})
+		}
+		mparties[i].Roster = onet.NewRoster(sis)
+	}
+
+	return &PopDesc{
+		Name:     descToml.Name,
+		DateTime: descToml.DateTime,
+		Location: descToml.Location,
+		Roster:   rostr,
+		Parties:  mparties,
+	}, nil
+}
+
 func (fs *FinalStatement) toTomlStruct() (*finalStatementToml, error) {
-	descToml, err := fs.Desc.toToml()
+	descToml, err := fs.Desc.toTomlStruct()
 	if err != nil {
 		return nil, err
 	}
@@ -390,6 +403,8 @@ type popDescToml struct {
 	Parties  []ShortDescToml
 }
 
+// represents Short Description of Pop party
+// Used in merge configuration
 type ShortDesc struct {
 	Location string
 	Roster   *onet.Roster
@@ -457,4 +472,45 @@ func toToml(r *onet.Roster) ([][]string, error) {
 		rostr[i] = sistr
 	}
 	return rostr, nil
+}
+
+type PopToken struct {
+	Desc    *PopDesc
+	Private abstract.Scalar
+	Public  abstract.Point
+}
+
+type popTokenToml struct {
+	Desc    *popDescToml
+	Private string
+	Public  string
+}
+
+func newPopTokenFromTomlStruct(t *popTokenToml) (*PopToken, error) {
+	token := &PopToken{}
+	var err error
+	log.Infof("%+v", t)
+	token.Desc, err = newPopDescFromTomlStruct(t.Desc)
+	if err != nil {
+		return nil, err
+	}
+	token.Private, err = crypto.String64ToScalar(network.Suite, t.Private)
+	if err != nil {
+		return nil, err
+	}
+	token.Public, err = crypto.String64ToPub(network.Suite, t.Public)
+	if err != nil {
+		return nil, err
+	}
+	return token, nil
+}
+
+func NewPopTokenFromToml(b []byte) (*PopToken, error) {
+	mapTokenToml := map[string]*popTokenToml{}
+	_, err := toml.Decode(string(b), &mapTokenToml)
+	if err != nil {
+		return nil, err
+	}
+	tokenToml := mapTokenToml["token"]
+	return newPopTokenFromTomlStruct(tokenToml)
 }

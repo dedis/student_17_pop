@@ -10,7 +10,7 @@ NBR_SERVERS_GROUP=$NBR_SERVERS
 MERGE_FILE=""
 main(){
 	startTest
-	buildConode gopkg.in/dedis/cothority.v1/cosi/service github.com/dedis/student_17_pop/service
+	buildConode gopkg.in/dedis/cothority.v1/cosi/service github.com/dedis/student_17_pop/pop/service
 	echo "Creating directories"
 	for n in $(seq $NBR_CLIENTS); do
 		cl=cl$n
@@ -71,23 +71,22 @@ testMerge(){
 	testFail runCl 1 attendee join -y ${priv[1]} final1.toml
 	testFail runCl 2 attendee join -y ${priv[2]} final2.toml
 	testFail runCl 3 attendee join -y ${priv[3]} final3.toml
-	testFail runCl 4 attendee join -y ${priv[3]} final3.toml
+	testFail runCl 4 attendee join -y ${priv[4]} final3.toml
 
 	testFail runCl 1 org merge
 	testFail runCl 3 org merge ${pop_hash[1]}
 
 	testOK runCl 1 org merge ${pop_hash[1]}
-	runDbgCl 1 1 org merge ${pop_hash[1]} | tail -n +3 > merge_final.toml
-	cat merge_final.toml
+	runDbgCl 1 2 org merge ${pop_hash[2]} | tail -n +3 > merge_final.toml
 	for i in {1..4}
 	do
 		testOK runCl $i attendee join -y ${priv[$i]} merge_final.toml
 	done
-	runDbgCl 1 1 attendee join -y ${priv[1]} merge_final.toml > pop_hash_file
+	runDbgCl 2 1 attendee join -y ${priv[1]} merge_final.toml > pop_hash_file
 	merged_hash=$(grep hash: pop_hash_file | sed -e "s/.* //")
 
 	for i in {1..4}; do
-		runDbgCl 1 $i attendee sign msg1 ctx1 $merged_hash | tee sign$i.toml
+		runDbgCl 2 $i attendee sign msg1 ctx1 $merged_hash | tee sign$i.toml
 		tag[$i]=$( grep Tag: sign$i.toml | sed -e "s/.* //")
 		sig[$i]=$( grep Signature: sign$i.toml | sed -e "s/.* //")
 	done
@@ -98,19 +97,6 @@ testMerge(){
 			testOK runCl $i attendee verify msg1 ctx1 ${sig[$j]} ${tag[$j]} $merged_hash
 		done
 	done
-
-	#testOK runCl 1 attendee verify msg1 ctx1 ${sig[1]} ${tag[1]} $merged_hash
-	#testOK runCl 1 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} $merged_hash
-	#testOK runCl 1 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} $merged_hash
-	#testOK runCl 1 attendee verify msg1 ctx1 ${sig[4]} ${tag[3]} $merged_hash
-
-	#testOK runCl 2 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} $merged_hash
-	#testOK runCl 2 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} $merged_hash
-	#testOK runCl 2 attendee verify msg1 ctx1 ${sig[1]} ${tag[1]} $merged_hash
-
-	#testOK runCl 3 attendee verify msg1 ctx1 ${sig[3]} ${tag[3]} $merged_hash
-	#testOK runCl 3 attendee verify msg1 ctx1 ${sig[1]} ${tag[1]} $merged_hash
-	#testOK runCl 3 attendee verify msg1 ctx1 ${sig[2]} ${tag[2]} $merged_hash
 
 }
 
@@ -128,26 +114,26 @@ testAtMultipleKey(){
 	runCl 2 org public ${pub[3]} ${pop_hash[2]}
 
 	runCl 1 org final  ${pop_hash[1]}
-	runDbgCl 1 2 org final  ${pop_hash[1]} | tail -n +3 > final1.toml
+	runDbgCl 2 2 org final  ${pop_hash[1]} | tail -n +3 > final1.toml
 	runCl 1 org final  ${pop_hash[2]}
-	runDbgCl 1 2 org final  ${pop_hash[2]} | tail -n +3 > final2.toml
+	runDbgCl 2 2 org final  ${pop_hash[2]} | tail -n +3 > final2.toml
 
 
 	testOK runCl 1 attendee join -y ${priv[1]} final1.toml
 	testOK runCl 1 attendee join -y ${priv[2]} final2.toml
 	testOK runCl 2 attendee join -y ${priv[3]} final2.toml
 
-	runDbgCl 1 1 attendee sign msg1 ctx1 ${pop_hash[1]} > sign.toml
+	runDbgCl 2 1 attendee sign msg1 ctx1 ${pop_hash[1]} > sign.toml
 	tag[1]=$( grep Tag: sign.toml | sed -e "s/.* //")
 	sig[1]=$( grep Signature: sign.toml | sed -e "s/.* //")
 
 
-	runDbgCl 1 1 attendee sign msg1 ctx1 ${pop_hash[2]} > sign.toml
+	runDbgCl 2 1 attendee sign msg1 ctx1 ${pop_hash[2]} > sign.toml
 	tag[2]=$( grep Tag: sign.toml | sed -e "s/.* //")
 	sig[2]=$( grep Signature: sign.toml | sed -e "s/.* //")
 
 
-	runDbgCl 1 2 attendee sign msg1 ctx1 ${pop_hash[2]} > sign.toml
+	runDbgCl 2 2 attendee sign msg1 ctx1 ${pop_hash[2]} > sign.toml
 	tag[3]=$( grep Tag: sign.toml | sed -e "s/.* //")
 	sig[3]=$( grep Signature: sign.toml | sed -e "s/.* //")
 
@@ -190,7 +176,7 @@ sig=()
 mkClSign(){
 	mkAtJoin
 	for i in {1..3}; do
-		runDbgCl 1 $i attendee sign msg1 ctx1 ${pop_hash[$i]} > sign$i.toml
+		runDbgCl 2 $i attendee sign msg1 ctx1 ${pop_hash[$i]} > sign$i.toml
 		tag[$i]=$( grep Tag: sign$i.toml | sed -e "s/.* //")
 		sig[$i]=$( grep Signature: sign$i.toml | sed -e "s/.* //")
 	done
@@ -200,7 +186,7 @@ testAtSign(){
 	mkFinal
 	testFail runCl 1 attendee sign msg1 ctx1 ${pop_hash[1]}
 	for i in {1..3}; do
-		runDbgCl 1 $i attendee join -y ${priv[$i]} final$i.toml > pop_hash_file
+		runDbgCl 2 $i attendee join -y ${priv[$i]} final$i.toml > pop_hash_file
 		pop_hash[$i]=$(grep hash: pop_hash_file | sed -e "s/.* //")
 	done
 	testFail runCl 1 attendee sign
@@ -235,11 +221,12 @@ testAtJoin(){
 	testFail runCl 1 attendee join -y ${priv[1]} ${pop_hash[1]}
 
 	runCl 1 org final  ${pop_hash[1]}
-	runDbgCl 1 2 org final  ${pop_hash[1]} | tail > final1.toml
+	runDbgCl 2 2 org final  ${pop_hash[1]} | tail > final1.toml
 	runCl 2 org final  ${pop_hash[2]}
-	runDbgCl 1 3 org final  ${pop_hash[2]} | tail > final2.toml
+	runDbgCl 2 3 org final  ${pop_hash[2]} | tail > final2.toml
 	runCl 3 org final  ${pop_hash[3]}
-	runDbgCl 1 1 org final  ${pop_hash[3]} | tail > final3.toml
+	runDbgCl 2 1 org final  ${pop_hash[3]} | tail > final3.toml
+	cat final1.toml
 
 	testFail runCl 1 attendee join -y
 	testFail runCl 1 attendee join -y ${priv[1]}
@@ -248,7 +235,7 @@ testAtJoin(){
 	testOK runCl 1 attendee join -y ${priv[1]} final1.toml
 	testOK runCl 2 attendee join -y ${priv[2]} final2.toml
 	testOK runCl 3 attendee join -y ${priv[3]} final3.toml
-	runDbgCl 1 1 attendee join -y ${priv[1]} final1.toml > tmp_file
+	runDbgCl 2 1 attendee join -y ${priv[1]} final1.toml > tmp_file
 	testGrep "hash" cat tmp_file
 }
 
@@ -267,11 +254,11 @@ mkFinal(){
 	runCl 3 org public ${pub[1]} ${pop_hash[3]}
 
 	runCl 1 org final  ${pop_hash[1]}
-	runDbgCl 1 2 org final  ${pop_hash[1]} | tail -n +3 > final1.toml
+	runDbgCl 2 2 org final  ${pop_hash[1]} | tail -n +3 > final1.toml
 	runCl 2 org final  ${pop_hash[2]}
-	runDbgCl 1 3 org final  ${pop_hash[2]} | tail -n +3> final2.toml
+	runDbgCl 2 3 org final  ${pop_hash[2]} | tail -n +3> final2.toml
 	runCl 3 org final  ${pop_hash[3]}
-	runDbgCl 1 1 org final  ${pop_hash[3]} | tail -n +3 > final3.toml
+	runDbgCl 2 1 org final  ${pop_hash[3]} | tail -n +3 > final3.toml
 }
 
 testOrgFinal3(){
@@ -362,7 +349,7 @@ mkConfig(){
 		for (( pc=1; pc<=$3; pc++ ))
 		do
 			num_pc=$((($pc + $cl) % $2 + 1))
-			runDbgCl 1 $cl org config pop_desc$num_pc.toml $MERGE_FILE | tee pop_hash_file
+			runDbgCl 2 $cl org config pop_desc$num_pc.toml $MERGE_FILE > pop_hash_file
 			pop_hash[$num_pc]=$(grep config: pop_hash_file | sed -e "s/.* //")
 		done
 	done
@@ -370,8 +357,8 @@ mkConfig(){
 
 testAtCreate(){
 	testOK runCl 1 attendee create
-	runDbgCl 1 1 attendee create > keypair.1
-	runDbgCl 1 1 attendee create > keypair.2
+	runDbgCl 2 1 attendee create > keypair.1
+	runDbgCl 2 1 attendee create > keypair.2
 	cmp keypair.1 keypair.2
 	testOK [ $? -eq 1 ]
 }
@@ -382,7 +369,7 @@ mkKeypair(){
 	local i
 	for (( i=1; i<=$1; i++ ))
 	do
-		runDbgCl 1 1 attendee create > keypair
+		runDbgCl 2 1 attendee create > keypair
 		priv[i]=$( grep Private keypair | sed -e "s/.* //" )
 		pub[i]=$( grep Public keypair | sed -e "s/.* //" )
 	done

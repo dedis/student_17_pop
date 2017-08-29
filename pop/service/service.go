@@ -43,6 +43,8 @@ import (
 	"gopkg.in/dedis/onet.v1/crypto"
 	"gopkg.in/dedis/onet.v1/log"
 	"gopkg.in/dedis/onet.v1/network"
+
+	_ "encoding/base64"
 )
 
 // Name is the name to refer to the Template service from another
@@ -55,6 +57,9 @@ const bftSignMerge = "PopBFTSignMerge"
 const propagFinal = "PoPPropagateFinal"
 
 const TIMEOUT = 60 * time.Second
+const SIGSIZE = 64
+
+//const TIMEOUT = 60 * time.Second
 const DELIMETER = "; "
 
 var checkConfigID network.MessageTypeID
@@ -122,9 +127,10 @@ type syncMeta struct {
 	mcGroup *sync.WaitGroup
 }
 
+/* ----------------Request Handlers---------------- */
+
 // PinRequest prints out a pin if none is given, else it verifies it has the
 // correct pin, and if so, it stores the public key as reference.
-// TODO: resolve organizers and clients(asking for update)
 func (s *Service) PinRequest(req *PinRequest) (network.Message, onet.ClientError) {
 	if req.Pin == "" {
 		s.data.Pin = fmt.Sprintf("%06d", random.Int(big.NewInt(1000000), random.Stream))
@@ -227,118 +233,6 @@ func (s *Service) FinalizeRequest(req *FinalizeRequest) (network.Message, onet.C
 	return &FinalizeResponse{final}, nil
 }
 
-// Verification function for signing during Finalization
-func (s *Service) bftVerifyFinal(Msg []byte, Data []byte) bool {
-	final, err := NewFinalStatementFromToml(Data)
-	if err != nil {
-		log.Error(err.Error())
-		return false
-	}
-	hash, err := final.Hash()
-	if err != nil {
-		log.Error(err.Error())
-		return false
-	}
-	if !bytes.Equal(hash, Msg) {
-		log.Error("hash of received Final stmt and msg are not equal")
-		return false
-	}
-	var fs *FinalStatement
-	var ok bool
-
-	if fs, ok = s.data.Finals[string(final.Desc.Hash())]; !ok {
-		log.Error("final Statement not found")
-		return false
-	}
-
-	hash, err = fs.Hash()
-
-	if !bytes.Equal(hash, Msg) {
-		log.Error("hash of lccocal Final stmt and msg are not equal")
-		return false
-	}
-	return true
-}
-
-//signs FinalStatement with BFTCosi and Propagates signature to other nodes
-func (s *Service) signAndPropagate(final *FinalStatement, protoName string,
-	data []byte) onet.ClientError {
-	tree := final.Desc.Roster.GenerateNaryTreeWithRoot(2, s.ServerIdentity())
-	if tree == nil {
-		return onet.NewClientErrorCode(ErrorInternal,
-			"Root does not exist")
-	}
-	node, err := s.CreateProtocol(protoName, tree)
-	if err != nil {
-		return onet.NewClientError(err)
-	}
-
-	// Register the function generating the protocol instance
-	root, ok := node.(*bftcosi.ProtocolBFTCoSi)
-	if !ok {
-		return onet.NewClientErrorCode(ErrorInternal,
-			"protocol instance is invalid")
-	}
-
-	root.Msg, err = final.Hash()
-	if err != nil {
-		return onet.NewClientError(err)
-	}
-
-	root.Data = data
-	signature := make(chan []byte)
-	root.RegisterOnSignatureDone(func(sig *bftcosi.BFTSignature) {
-		if len(sig.Sig) >= 64 {
-			signature <- sig.Sig[:64]
-		} else {
-			signature <- []byte{}
-		}
-	})
-
-	go node.Start()
-
-	select {
-	case final.Signature, ok = <-signature:
-		break
-	case <-time.After(TIMEOUT):
-		log.Error("signing failed on timeout")
-		return onet.NewClientErrorCode(ErrorTimeout,
-			"signing timeout")
-	}
-
-	if len(final.Signature) <= 0 {
-		log.Error("Signing failed")
-		return onet.NewClientErrorCode(ErrorTimeout,
-			"Signing failed")
-	}
-
-	replies, err := s.PropagateFinalize(final.Desc.Roster, final, 10000)
-	if err != nil {
-		return onet.NewClientError(err)
-	}
-	if replies != len(final.Desc.Roster.List) {
-		log.Warn("Did only get", replies)
-	}
-	s.save()
-	return nil
-}
-
-// PropagateFinal saves the new final statement
-func (s *Service) PropagateFinal(msg network.Message) {
-	fs, ok := msg.(*FinalStatement)
-	if !ok {
-		log.Error("Couldn't convert to a FinalStatement")
-		return
-	}
-	if err := fs.Verify(); err != nil {
-		log.Error(err)
-		return
-	}
-	*s.data.Finals[string(fs.Desc.Hash())] = *fs
-	s.save()
-	log.Lvlf2("%s Stored final statement %v", s.ServerIdentity(), fs)
-}
-
 // FetchFinal returns FinalStatement by hash
 // used after Finalization
 func (s *Service) FetchFinal(req *FetchRequest) (network.Message,
@@ -378,6 +272,9 @@ func (s *Service) MergeRequest(req *MergeRequest) (network.Message,
 		return nil, onet.NewClientErrorCode(ErrorInternal,
 			"No config found")
 	}
+	if final.Merged {
+		return &FinalizeResponse{final}, nil
+	}
 	if meta, ok = s.data.MergeMetas[string(req.ID)]; !ok {
 		return nil, onet.NewClientErrorCode(ErrorInternal,
 			"No meta found")
@@ -395,9 +292,7 @@ func (s *Service) MergeRequest(req *MergeRequest) (network.Message,
 		return nil, onet.NewClientErrorCode(ErrorInternal,
 			"Party is unmergeable")
 	}
-	if final.Merged {
-		return &FinalizeResponse{final}, nil
-	}
+
 	// Check if the party is the merge list
 	found := false
 	for _, party := range final.Desc.Parties {
@@ -412,8 +307,12 @@ func (s *Service) MergeRequest(req *MergeRequest) (network.Message,
 	}
 	newFinal, cerr := s.Merge(final, meta)
 	if cerr != nil {
+		if cerr.ErrorCode() == ErrorMergeInProgress {
+			return final, nil
+		}
 		return nil, cerr
 	}
+
 	// Decode mapStatements to send it on signing
 	data, err := encodeMapFinal(meta.statementsMap)
 	if err != nil {
@@ -424,7 +323,6 @@ func (s *Service) MergeRequest(req *MergeRequest) (network.Message,
 	if cerr != nil {
 		return nil, cerr
 	}
-
 	// refresh data
 	hash := string(newFinal.Desc.Hash())
 	s.data.Finals[hash] = newFinal
@@ -433,9 +331,10 @@ func (s *Service) MergeRequest(req *MergeRequest) (network.Message,
 	meta.statementsMap = make(map[string]*FinalStatement)
 	meta.statementsMap[hash] = final
 
-	// trigger merging process
 	return &FinalizeResponse{final}, nil
 }
+
+/* ------------InterConode Messages ----------- */
 
 // MergeConfig receives a final statement of requesting party,
 // hash of local party. Checks if they are from one merge party and responses with
@@ -593,6 +492,246 @@ func (s *Service) CheckConfigReply(req *network.Envelope) {
 	}
 }
 
+/* -------------Verification functions------------- */
+
+// Verification function for signing during Finalization
+func (s *Service) bftVerifyFinal(Msg []byte, Data []byte) bool {
+	final, err := NewFinalStatementFromToml(Data)
+	if err != nil {
+		log.Error(err.Error())
+		return false
+	}
+	hash, err := final.Hash()
+	if err != nil {
+		log.Error(err.Error())
+		return false
+	}
+	if !bytes.Equal(hash, Msg) {
+		log.Error("hash of received Final stmt and msg are not equal")
+		return false
+	}
+	var fs *FinalStatement
+	var ok bool
+
+	if fs, ok = s.data.Finals[string(final.Desc.Hash())]; !ok {
+		log.Error("final Statement not found")
+		return false
+	}
+
+	hash, err = fs.Hash()
+
+	if !bytes.Equal(hash, Msg) {
+		log.Error("hash of lccocal Final stmt and msg are not equal")
+		return false
+	}
+	return true
+}
+
+// Verification function for sighning during Merging
+func (s *Service) bftVerifyMerge(Msg []byte, Data []byte) bool {
+	stmtsMap, err := decodeMapFinal(Data)
+	if err != nil {
+		log.Error("VerifyMerge: can't decode Data: " + err.Error())
+		return false
+	}
+
+	// We need to find all local parties are supposed to merge
+	// verify that everything is correct
+	var final, finalReceived *FinalStatement
+	// local parties which will me merged during current process
+	finals := make([]*FinalStatement, 0)
+	var ok, found bool
+	for _, finalReceived = range stmtsMap {
+		if f, ok := s.data.Finals[string(finalReceived.Desc.Hash())]; ok {
+
+			found = true
+			final = f
+
+			// Check that info from local party is included in mergeMeta
+			hashLocal, err := final.Hash()
+			if err != nil {
+				log.Error("VerifyMerge: hash computation failed")
+				return false
+			}
+			hashReceived, err := finalReceived.Hash()
+			if err != nil {
+				log.Error("VerifyMerge: hash computation failed")
+				return false
+			}
+			if !bytes.Equal(hashLocal, hashReceived) {
+				log.Error("VerifyMerge: hashes Received and Local are not equal", s.ServerIdentity())
+				return false
+			}
+
+			// check that merge config is completed in mergeMeta
+			if len(stmtsMap) != len(final.Desc.Parties) {
+				log.Error("VerifyMerge: length of MergeMeta and Merge Config are not equal", s.ServerIdentity())
+				return false
+			}
+			for _, mergeStmt := range stmtsMap {
+				status := final.VerifyMergeStatement(mergeStmt)
+				if status < PopStatusOK {
+					log.Error("VerifyMerge: Received non valid FinalStatement", s.ServerIdentity())
+					return false
+				}
+			}
+			finals = append(finals, final)
+		}
+	}
+
+	if !found {
+		log.Error("VerifyMerge: no party from merge was found locally")
+		return false
+	}
+
+	meta := &mergeMeta{stmtsMap, true}
+	var syncData *syncMeta
+	if syncData, ok = s.syncMetas[string(final.Desc.Hash())]; !ok {
+		log.Error("VerifyMerge: No sync data with given hash")
+		return false
+	}
+
+	// Merge fields
+	locs := make([]string, 0)
+	Roster := &onet.Roster{}
+	na := make([]abstract.Point, 0)
+	for _, f := range meta.statementsMap {
+		// although there must not be any intersection
+		// in attendies list it's better to check it
+		// not simply extend the list
+		na = unionAttendies(na, f.Attendees)
+		Roster = unionRoster(Roster, f.Desc.Roster)
+		locs = append(locs, f.Desc.Location)
+	}
+	sort.Slice(locs, func(i, j int) bool {
+		return strings.Compare(locs[i], locs[j]) < 0
+	})
+	final.Desc.Location = strings.Join(locs, DELIMETER)
+	final.Merged = true
+	sort.Slice(Roster.List, func(i, j int) bool {
+		return strings.Compare(Roster.List[i].String(), Roster.List[j].String()) < 0
+	})
+	final.Desc.Roster = Roster
+	sort.Slice(na, func(i, j int) bool {
+		return strings.Compare(na[i].String(), na[j].String()) < 0
+	})
+	final.Attendees = na
+
+	// check that Msg is valid
+	hashLocal, err := final.Hash()
+	if err != nil {
+		log.Error("VerifyMerge: hash computation failed")
+		return false
+	}
+
+	if !bytes.Equal(hashLocal, Msg) {
+		log.Error("Msg is invalid", s.ServerIdentity())
+		return false
+	}
+
+	// update local data
+	newHash := string(final.Desc.Hash())
+	s.data.Finals[newHash] = final
+	s.data.MergeMetas[newHash] = meta
+	s.syncMetas[newHash] = syncData
+	meta.statementsMap = make(map[string]*FinalStatement)
+	meta.statementsMap[newHash] = final
+
+	// change final statement for all parties which were going to merge
+	// to backward compatibility with orgs, who can't get hash of new final statement
+	for _, f := range finals {
+		s.data.Finals[string(f.Desc.Hash())] = final
+		// there is no need to support consistency of syncData and Meta
+		// for old parties because their finalStatements are rewritten
+	}
+
+	s.save()
+	return true
+}
+
+/* --------------Propagation function-------------- */
+
+// PropagateFinal saves the new final statement
+func (s *Service) PropagateFinal(msg network.Message) {
+	fs, ok := msg.(*FinalStatement)
+	if !ok {
+		log.Error("Couldn't convert to a FinalStatement")
+		return
+	}
+	if err := fs.Verify(); err != nil {
+		log.Error(err)
+		return
+	}
+	*s.data.Finals[string(fs.Desc.Hash())] = *fs
+	s.save()
+	log.Lvlf2("%s Stored final statement %v", s.ServerIdentity(), fs)
+}
+
+/* ----------------Utilite functions--------------- */
+
+//signs FinalStatement with BFTCosi and Propagates signature to other nodes
+func (s *Service) signAndPropagate(final *FinalStatement, protoName string,
+	data []byte) onet.ClientError {
+	tree := final.Desc.Roster.GenerateNaryTreeWithRoot(2, s.ServerIdentity())
+	if tree == nil {
+		return onet.NewClientErrorCode(ErrorInternal,
+			"Root does not exist")
+	}
+	node, err := s.CreateProtocol(protoName, tree)
+	if err != nil {
+		return onet.NewClientError(err)
+	}
+
+	// Register the function generating the protocol instance
+	root, ok := node.(*bftcosi.ProtocolBFTCoSi)
+	if !ok {
+		return onet.NewClientErrorCode(ErrorInternal,
+			"protocol instance is invalid")
+	}
+
+	root.Msg, err = final.Hash()
+	if err != nil {
+		return onet.NewClientError(err)
+	}
+
+	root.Data = data
+	done := make(chan bool)
+	root.RegisterOnDone(func() {
+		done <- true
+	})
+	final.Signature = []byte{}
+	go node.Start()
+
+	select {
+	case <-done:
+		sig := root.Signature()
+		if len(sig.Sig) >= SIGSIZE {
+			final.Signature = sig.Sig[:SIGSIZE]
+		} else {
+			final.Signature = []byte{}
+		}
+	case <-time.After(TIMEOUT):
+		log.Error("signing failed on timeout")
+		return onet.NewClientErrorCode(ErrorTimeout,
+			"signing timeout")
+	}
+	if len(final.Signature) <= 0 {
+		log.Error("Signing failed")
+		return onet.NewClientErrorCode(ErrorTimeout,
+			"Signing failed")
+	}
+
+	replies, err := s.PropagateFinalize(final.Desc.Roster, final, 10000)
+	if err != nil {
+		return onet.NewClientError(err)
+	}
+	if replies != len(final.Desc.Roster.List) {
+		log.Warn("Did only get", replies)
+	}
+	s.save()
+	return nil
+}
+
 // Merge sends MergeConfig to all parties,
 // Receives Replies, updates info about global merge party
 // When all merge party's info is saved, merge it and starts global sighning process
@@ -602,7 +741,7 @@ func (s *Service) Merge(final *FinalStatement, meta *mergeMeta) (*FinalStatement
 	if meta.distrib {
 		// Used not to start merge process 2 times, when one is on run.
 		log.Lvl2(s.ServerIdentity(), "Not enter merge")
-		return final, nil
+		return nil, onet.NewClientErrorCode(ErrorMergeInProgress, "Merge Process in in progress")
 	}
 	log.Lvl2("Merge ", s.ServerIdentity())
 	meta.distrib = true
@@ -684,112 +823,8 @@ func (s *Service) Merge(final *FinalStatement, meta *mergeMeta) (*FinalStatement
 		return strings.Compare(na[i].String(), na[j].String()) < 0
 	})
 	newFinal.Attendees = na
-
+	newFinal.Merged = true
 	return newFinal, nil
-}
-
-// function used in bft
-func (s *Service) bftVerifyMerge(Msg []byte, Data []byte) bool {
-	stmtsMap, err := decodeMapFinal(Data)
-	if err != nil {
-		log.Error("VerifyMerge: can't decode Data: " + err.Error())
-		return false
-	}
-
-	// Try to final finalStatement of party locally
-	var final, finalReceived *FinalStatement
-	ok := false
-	for _, finalReceived = range stmtsMap {
-		if final, ok = s.data.Finals[string(finalReceived.Desc.Hash())]; ok {
-			break
-		}
-	}
-	if !ok {
-		log.Error("VerifyMerge: no party from merge was found locally")
-		return false
-	}
-
-	// Check that info from local party is included in mergeMeta
-	hashLocal, err := final.Hash()
-	if err != nil {
-		log.Error("VerifyMerge: hash computation failed")
-		return false
-	}
-	hashReceived, err := finalReceived.Hash()
-	if err != nil {
-		log.Error("VerifyMerge: hash computation failed")
-		return false
-	}
-	if !bytes.Equal(hashLocal, hashReceived) {
-		log.Error("VerifyMerge: hashes Received and Local are not equal", s.ServerIdentity())
-		return false
-	}
-
-	// check that merge config is completed in mergeMeta
-	if len(stmtsMap) != len(final.Desc.Parties) {
-		log.Error("VerifyMerge: length of MergeMeta and Merge Config are not equal")
-		return false
-	}
-	for _, mergeStmt := range stmtsMap {
-		status := final.VerifyMergeStatement(mergeStmt)
-		if status < PopStatusOK {
-			log.Error("VerifyMerge: Received non valid FinalStatement")
-			return false
-		}
-	}
-	meta := &mergeMeta{stmtsMap, true}
-	var syncData *syncMeta
-	// Merge
-	if syncData, ok = s.syncMetas[string(final.Desc.Hash())]; !ok {
-		log.Error("VerifyMerge: No sync data with given hash")
-		return false
-	}
-
-	locs := make([]string, 0)
-	Roster := &onet.Roster{}
-	na := make([]abstract.Point, 0)
-	for _, f := range meta.statementsMap {
-		// although there must not be any intersection
-		// in attendies list it's better to check it
-		// not simply extend the list
-		na = unionAttendies(na, f.Attendees)
-		Roster = unionRoster(Roster, f.Desc.Roster)
-		locs = append(locs, f.Desc.Location)
-	}
-	sort.Slice(locs, func(i, j int) bool {
-		return strings.Compare(locs[i], locs[j]) < 0
-	})
-	final.Desc.Location = strings.Join(locs, DELIMETER)
-	final.Merged = true
-	sort.Slice(Roster.List, func(i, j int) bool {
-		return strings.Compare(Roster.List[i].String(), Roster.List[j].String()) < 0
-	})
-	final.Desc.Roster = Roster
-	sort.Slice(na, func(i, j int) bool {
-		return strings.Compare(na[i].String(), na[j].String()) < 0
-	})
-	final.Attendees = na
-
-	hashLocal, err = final.Hash()
-	if err != nil {
-		log.Error("VerifyMerge: hash computation failed")
-		return false
-	}
-
-	if !bytes.Equal(hashLocal, Msg) {
-		log.Error("Msg is invalid", s.ServerIdentity())
-		return false
-	}
-
-	newHash := string(final.Desc.Hash())
-	s.data.Finals[newHash] = final
-	s.data.MergeMetas[newHash] = meta
-	s.syncMetas[newHash] = syncData
-	meta.statementsMap = make(map[string]*FinalStatement)
-	meta.statementsMap[newHash] = final
-
-	s.save()
-	return true
 }
 
 // VerifyMergeStatement checks that received mergeFinal is valid and can be merged with final
