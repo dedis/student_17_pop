@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/dedis/cothority.v1/cosi/protocol"
 	"gopkg.in/dedis/crypto.v0/abstract"
+	"gopkg.in/dedis/crypto.v0/anon"
 	"gopkg.in/dedis/crypto.v0/config"
 	"gopkg.in/dedis/onet.v1"
 	"gopkg.in/dedis/onet.v1/crypto"
@@ -39,7 +40,7 @@ func TestIdentity_PinRequest(t *testing.T) {
 	}
 	_, cerr = srvc.PinRequest(&PinRequest{pin, pub})
 	log.Error(cerr)
-	require.Equal(t, srvc.auth.keys[0], pub)
+	require.Equal(t, pub, srvc.auth.adminKeys[0])
 }
 
 func TestIdentity_StoreKeys(t *testing.T) {
@@ -79,13 +80,13 @@ func TestIdentity_StoreKeys(t *testing.T) {
 
 	final.Signature = <-signature
 
-	srvc.auth.keys = append(srvc.auth.keys, keypairAdmin.Public)
+	srvc.auth.adminKeys = append(srvc.auth.adminKeys, keypairAdmin.Public)
 
 	sig, err := crypto.SignSchnorr(network.Suite, keypairAdmin.Secret, hash)
 	log.ErrFatal(err)
 	_, cerr := srvc.StoreKeys(&StoreKeys{final, sig})
 	require.Nil(t, cerr)
-	require.Equal(t, srvc.auth.keys[1], keypairUser.Public)
+	require.Equal(t, 1, len(srvc.auth.sets))
 }
 
 func TestIdentity_DataNewCheck(t *testing.T) {
@@ -154,6 +155,17 @@ func TestIdentity_DataUpdate(t *testing.T) {
 	if !o1.Point.Equal(c1.Public) {
 		t.Fatal("Owner is not c1")
 	}
+}
+
+func TestIdentity_Authenticate(t *testing.T) {
+	l := onet.NewTCPTest()
+	hosts, _, _ := l.GenTree(1, true)
+	services := l.GetServices(hosts, identityService)
+	s := services[0].(*Service)
+	defer l.CloseAll()
+	au := &Authenticate{[]byte{}, []byte{}}
+	s.Authenticate(au)
+	require.Equal(t, 1, len(s.auth.nonces))
 }
 
 func TestIdentity_CreateIdentity(t *testing.T) {
@@ -252,10 +264,12 @@ func TestCrashAfterRevocation(t *testing.T) {
 	services := l.GetServices(hosts, identityService)
 	defer l.CloseAll()
 	keypair := config.NewKeyPair(network.Suite)
+	kp2 := config.NewKeyPair(network.Suite)
+	set := anon.Set([]abstract.Point{keypair.Public, kp2.Public})
 	for _, srvc := range services {
 		s := srvc.(*Service)
 		log.Lvl3(s.Identities)
-		s.auth.keys = append(s.auth.keys, keypair.Public)
+		s.auth.sets = append(s.auth.sets, set)
 	}
 
 	c1 := NewIdentity(el, 2, "one", keypair)
@@ -264,7 +278,7 @@ func TestCrashAfterRevocation(t *testing.T) {
 	defer c1.Client.Close()
 	defer c2.Client.Close()
 	defer c3.Client.Close()
-	log.ErrFatal(c1.CreateIdentity())
+	log.ErrFatal(c1.CreateIdentity(set))
 	log.ErrFatal(c2.AttachToIdentity(c1.ID))
 	proposeUpVote(c1)
 	log.ErrFatal(c3.AttachToIdentity(c1.ID))
@@ -350,12 +364,14 @@ func proposeUpVote(i *Identity) {
 
 func createIdentity(l *onet.LocalTest, services []onet.Service, el *onet.Roster, name string) *Identity {
 	keypair := config.NewKeyPair(network.Suite)
+	kp2 := config.NewKeyPair(network.Suite)
+	set := anon.Set([]abstract.Point{keypair.Public, kp2.Public})
 	for _, srvc := range services {
 		s := srvc.(*Service)
-		s.auth.keys = append(s.auth.keys, keypair.Public)
+		s.auth.sets = append(s.auth.sets, set)
 	}
 
 	c := NewTestIdentity(el, 50, name, l, keypair)
-	log.ErrFatal(c.CreateIdentity())
+	log.ErrFatal(c.CreateIdentity(set))
 	return c
 }

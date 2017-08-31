@@ -216,22 +216,8 @@ type StoreKeys struct {
 type CreateIdentity struct {
 	Data   *Data
 	Roster *onet.Roster
-	Sig    crypto.SchnorrSig
-}
-
-func (ai *CreateIdentity) Hash() ([]byte, error) {
-	h := network.Suite.Hash()
-	d, err := ai.Data.Hash()
-	if err != nil {
-		return nil, err
-	}
-	_, err = h.Write(d)
-	buf, err := ai.Roster.Aggregate.MarshalBinary()
-	if err != nil {
-		return nil, err
-	}
-	h.Write(buf)
-	return h.Sum(nil), nil
+	Sig    []byte
+	Nonce  []byte
 }
 
 // CreateIdentityReply is the reply when a new Identity has been added. It
@@ -287,10 +273,16 @@ type ProposeVoteReply struct {
 // PropagateIdentity sends a new identity to other identityServices
 type PropagateIdentity struct {
 	*Storage
+	Tag string
 }
 
 // UpdateSkipBlock asks the service to fetch the latest SkipBlock
 type UpdateSkipBlock struct {
 	ID     ID
 	Latest *skipchain.SkipBlock
+}
+
+type Authenticate struct {
+	Nonce []byte
+	Ctx   []byte
 }

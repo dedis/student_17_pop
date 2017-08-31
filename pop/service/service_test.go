@@ -67,9 +67,9 @@ func TestService_StoreConfig(t *testing.T) {
 	hash := desc.Hash()
 	sg, err := crypto.SignSchnorr(network.Suite, kp.Secret, hash)
 	log.ErrFatal(err)
-	msg, cerr := service.StoreConfig(&StoreConfig{desc, sg})
+	msg, cerr := service.StoreConfig(&storeConfig{desc, sg})
 	log.ErrFatal(cerr)
-	_, ok := msg.(*StoreConfigReply)
+	_, ok := msg.(*storeConfigReply)
 	require.True(t, ok)
 	_, ok = service.data.Finals[string(desc.Hash())]
 	require.True(t, ok)
@@ -87,24 +87,24 @@ func TestService_CheckConfigMessage(t *testing.T) {
 			copy(s.data.Finals[hash].Attendees, atts)
 		}
 	}
-	cc := &CheckConfig{[]byte{}, atts}
+	cc := &checkConfig{[]byte{}, atts}
 	srvcs[0].SendRaw(r.List[1], cc)
 	hash := string(descs[0].Hash())
 	select {
-	case <-srvcs[0].syncMetas[hash].ccChannel:
+	case <-srvcs[0].syncs[hash].ccChannel:
 		require.Fail(t, "unexpected write on channel")
 	case <-time.After(TIMEOUT / 60):
 		break
 	}
 	cc.PopHash = []byte(hash)
 	srvcs[0].SendRaw(r.List[1], cc)
-	require.NotNil(t, <-srvcs[0].syncMetas[hash].ccChannel)
+	require.NotNil(t, <-srvcs[0].syncs[hash].ccChannel)
 	require.Equal(t, 2, len(srvcs[0].data.Finals[hash].Attendees))
 	require.Equal(t, 2, len(srvcs[1].data.Finals[hash].Attendees))
 
 	cc.Attendees = atts[:1]
 	srvcs[0].SendRaw(r.List[1], cc)
-	require.NotNil(t, <-srvcs[0].syncMetas[hash].ccChannel)
+	require.NotNil(t, <-srvcs[0].syncs[hash].ccChannel)
 	require.Equal(t, 1, len(srvcs[0].data.Finals[hash].Attendees))
 	require.Equal(t, 1, len(srvcs[1].data.Finals[hash].Attendees))
 }
@@ -120,26 +120,26 @@ func TestService_CheckConfigReply(t *testing.T) {
 		s0.data.Finals[hash].Attendees = make([]abstract.Point, len(atts))
 		copy(s0.data.Finals[hash].Attendees, atts)
 
-		ccr := &CheckConfigReply{0, desc.Hash(), atts}
+		ccr := &checkConfigReply{0, desc.Hash(), atts}
 		req := &network.Envelope{
 			Msg:            ccr,
 			ServerIdentity: nodes[1].ServerIdentity,
 		}
 
 		s0.CheckConfigReply(req)
-		<-s0.syncMetas[hash].ccChannel
+		<-s0.syncs[hash].ccChannel
 		require.Equal(t, 2, len(s0.data.Finals[hash].Attendees))
 
 		ccr.Attendees = atts[:1]
 		req.Msg = ccr
 		s0.CheckConfigReply(req)
-		<-s0.syncMetas[hash].ccChannel
+		<-s0.syncs[hash].ccChannel
 		require.Equal(t, 2, len(s0.data.Finals[hash].Attendees))
 
 		ccr.PopStatus = PopStatusOK + 1
 		req.Msg = ccr
 		s0.CheckConfigReply(req)
-		<-s0.syncMetas[hash].ccChannel
+		<-s0.syncs[hash].ccChannel
 		require.Equal(t, 1, len(s0.data.Finals[hash].Attendees))
 	}
 }
@@ -159,10 +159,10 @@ func TestService_FinalizeRequest(t *testing.T) {
 		descHash := desc.Hash()
 		delete(services[0].data.Finals, string(descHash))
 
-		fr := &FinalizeRequest{}
+		fr := &finalizeRequest{}
 		fr.DescID = descHash
 		fr.Attendees = atts
-		hash, err := fr.Hash()
+		hash, err := fr.hash()
 		log.ErrFatal(err)
 		// Send a request to all services
 		for i, s := range services {
@@ -176,7 +176,7 @@ func TestService_FinalizeRequest(t *testing.T) {
 		sg, err := crypto.SignSchnorr(network.Suite, privs[0], desc.Hash())
 		log.ErrFatal(err)
 		// Create a new config for the first one
-		services[0].StoreConfig(&StoreConfig{desc, sg})
+		services[0].StoreConfig(&storeConfig{desc, sg})
 
 		// Send a request to all services but the first one
 		for i, s := range services {
@@ -198,7 +198,7 @@ func TestService_FinalizeRequest(t *testing.T) {
 		final, err := services[0].FinalizeRequest(fr)
 		require.Nil(t, err)
 		require.NotNil(t, final)
-		fin, ok := final.(*FinalizeResponse)
+		fin, ok := final.(*finalizeResponse)
 		require.True(t, ok)
 		require.Nil(t, fin.Final.Verify())
 	}
@@ -216,10 +216,10 @@ func TestService_FetchFinal(t *testing.T) {
 	descs, atts, services, priv := storeDesc(local.GetServices(nodes, serviceID), r, nbrAtt, ndescs)
 	for _, desc := range descs {
 		descHash := desc.Hash()
-		fr := &FinalizeRequest{}
+		fr := &finalizeRequest{}
 		fr.DescID = descHash
 		fr.Attendees = atts
-		hash, err := fr.Hash()
+		hash, err := fr.hash()
 		sg, err := crypto.SignSchnorr(network.Suite, priv[0], hash)
 		log.ErrFatal(err)
 		fr.Signature = sg
@@ -234,17 +234,17 @@ func TestService_FetchFinal(t *testing.T) {
 		msg, err := services[1].FinalizeRequest(fr)
 		require.Nil(t, err)
 		require.NotNil(t, msg)
-		_, ok := msg.(*FinalizeResponse)
+		_, ok := msg.(*finalizeResponse)
 		require.True(t, ok)
 	}
 	for _, desc := range descs {
 		// Fetch final
 		descHash := desc.Hash()
 		for _, s := range services {
-			msg, err := s.FetchFinal(&FetchRequest{descHash})
+			msg, err := s.FetchFinal(&fetchRequest{descHash})
 			require.Nil(t, err)
 			require.NotNil(t, msg)
-			resp, ok := msg.(*FinalizeResponse)
+			resp, ok := msg.(*finalizeResponse)
 			require.True(t, ok)
 			final := resp.Final
 			require.NotNil(t, final)
@@ -265,9 +265,9 @@ func TestService_MergeConfig(t *testing.T) {
 	hash := make([]string, nbrNodes/2)
 	hash[0] = string(descs[0].Hash())
 	hash[1] = string(descs[1].Hash())
-	cc := &MergeConfig{srvcs[0].data.Finals[hash[0]], []byte{}}
+	cc := &mergeConfig{srvcs[0].data.Finals[hash[0]], []byte{}}
 	srvcs[0].SendRaw(r.List[1], cc)
-	mcr := <-srvcs[0].syncMetas[hash[0]].mcChannel
+	mcr := <-srvcs[0].syncs[hash[0]].mcChannel
 	require.NotNil(t, mcr)
 	require.Nil(t, mcr.Final)
 	require.Equal(t, PopStatusWrongHash, mcr.PopStatus)
@@ -276,7 +276,7 @@ func TestService_MergeConfig(t *testing.T) {
 
 	cc.ID = []byte(hash[1])
 	srvcs[0].SendRaw(r.List[2], cc)
-	mcr = <-srvcs[0].syncMetas[hash[0]].mcChannel
+	mcr = <-srvcs[0].syncs[hash[0]].mcChannel
 	require.NotNil(t, mcr)
 	require.Nil(t, mcr.Final)
 	require.Equal(t, PopStatusMergeNonFinalized, mcr.PopStatus)
@@ -284,10 +284,10 @@ func TestService_MergeConfig(t *testing.T) {
 	for i, desc := range descs {
 		descHash := desc.Hash()
 
-		fr := &FinalizeRequest{}
+		fr := &finalizeRequest{}
 		fr.DescID = descHash
 		fr.Attendees = atts[2*i : 2*i+2]
-		hash, err := fr.Hash()
+		hash, err := fr.hash()
 		sg, err := crypto.SignSchnorr(network.Suite, priv[2*i], hash)
 		log.ErrFatal(err)
 		fr.Signature = sg
@@ -300,7 +300,7 @@ func TestService_MergeConfig(t *testing.T) {
 		msg, err := srvcs[2*i+1].FinalizeRequest(fr)
 		require.Nil(t, err)
 		require.NotNil(t, msg)
-		_, ok := msg.(*FinalizeResponse)
+		_, ok := msg.(*finalizeResponse)
 		require.True(t, ok)
 	}
 
@@ -311,7 +311,7 @@ func TestService_MergeConfig(t *testing.T) {
 	cc.Final = srvcs[0].data.Finals[hash[0]]
 	cc.ID = []byte(hash[1])
 	srvcs[0].SendRaw(r.List[2], cc)
-	meta := srvcs[2].data.MergeMetas[hash[1]]
+	meta := srvcs[2].data.merges[hash[1]]
 	// Here is involuntary race condition solved by waiting in cycle
 	// on timeout
 	// In this case I can't wait till the end of process because
@@ -332,7 +332,7 @@ func TestService_MergeRequest(t *testing.T) {
 	hash[1] = string(descs[1].Hash())
 
 	// Wrong party check
-	mr := &MergeRequest{}
+	mr := &mergeRequest{}
 	mr.ID = []byte(hash[1])
 	sg, err := crypto.SignSchnorr(network.Suite, priv[0], mr.ID)
 	mr.Signature = sg
@@ -350,10 +350,10 @@ func TestService_MergeRequest(t *testing.T) {
 	// finish parties
 	for i, _ := range descs {
 
-		fr := &FinalizeRequest{}
+		fr := &finalizeRequest{}
 		fr.DescID = []byte(hash[i])
 		fr.Attendees = atts[2*i : 2*i+2]
-		hash_fr, err := fr.Hash()
+		hash_fr, err := fr.hash()
 		sg, err := crypto.SignSchnorr(network.Suite, priv[2*i], hash_fr)
 		log.ErrFatal(err)
 		fr.Signature = sg
@@ -366,7 +366,7 @@ func TestService_MergeRequest(t *testing.T) {
 		msg, err := srvcs[2*i+1].FinalizeRequest(fr)
 		require.Nil(t, err)
 		require.NotNil(t, msg)
-		_, ok := msg.(*FinalizeResponse)
+		_, ok := msg.(*finalizeResponse)
 		require.True(t, ok)
 	}
 	// wrong Signature
@@ -440,7 +440,7 @@ func storeDesc(srvcs []onet.Service, el *onet.Roster, nbr int,
 			hash := desc.Hash()
 			sig, err := crypto.SignSchnorr(network.Suite, privs[i], hash)
 			log.ErrFatal(err)
-			s.(*Service).StoreConfig(&StoreConfig{desc, sig})
+			s.(*Service).StoreConfig(&storeConfig{desc, sig})
 		}
 	}
 	return descs, atts, sret, privs
@@ -492,7 +492,7 @@ func storeDescMerge(srvcs []onet.Service, el *onet.Roster, nbr int) ([]*PopDesc,
 		hash := desc.Hash()
 		sig, err := crypto.SignSchnorr(network.Suite, privs[i], hash)
 		log.ErrFatal(err)
-		s.(*Service).StoreConfig(&StoreConfig{desc, sig})
+		s.(*Service).StoreConfig(&storeConfig{desc, sig})
 	}
 	return descs, atts, sret, privs
 }

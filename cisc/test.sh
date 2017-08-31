@@ -286,6 +286,11 @@ testIdCreate(){
     testFile cl1/config.bin
     testGrep $(hostname) runCl 1 id cr -t PoP -f token.toml public.toml
     testGrep client1 runCl 1 id cr -t PoP -f token.toml public.toml client1
+
+    for i in {1..2}; do
+    	testOK runCl 1 id cr -t PoP -f token.toml public.toml
+    done
+    testFail runCl 1 id cr -t PoP -f token.toml public.toml
 }
 
 testClientSetup(){
@@ -338,7 +343,7 @@ testLink(){
     local pin=$( grep PIN ${COLOG}1.log | sed -e "s/.* //" )
     testFail runCl 1 admin link ${addr[1]} abcdefg
     testOK runCl 1 admin link ${addr[1]} $pin
-    testFile cl1/admin_key.bin
+    testFile cl1/config.bin
 }
 
 testBuild(){
@@ -413,22 +418,19 @@ EOF
 
 createToken(){
     cat << EOF > token.toml
-[token.Desc]
-Name = "Proof-of-Personhood Party"
-DateTime = "2017-08-08 15:00 UTC"
-Location = "Earth, City"
+[token.Final]
 EOF
-    local n
-    for (( n=1; n<=$1; n++ ))
-    do
-        echo "[[token.Desc.servers]]" >> token.toml
-        sed -n "$((4*$n-2)),$((4*$n))p" public.toml >> token.toml
-    done
+    sed -n "1,3p" final.toml >> token.toml
+    cat << EOF >> token.toml
+[token.Final.Desc]
+EOF
+    sed -n "6,10p" final.toml >> token.toml
     cat << EOF >> token.toml
 [token]
 Private = "$PRIV_USER"
 Public = "$PUB_USER"
 EOF
+#cat token.toml
 }
 
 createFinal(){
@@ -438,6 +440,9 @@ createFinal(){
     ./$pop -d 2 attendee create > $KP
     PRIV_USER=$( grep Private $KP | sed -e "s/.* //")
     PUB_USER=$( grep Public $KP | sed -e "s/.* //")
+
+    ./$pop -d 2 attendee create > $KP
+    local pub_user1=$( grep Public $KP | sed -e "s/.* //")
     createPopDesc $1
 
     ./$pop -c cl1 org link ${addr[1]}
@@ -448,12 +453,13 @@ createFinal(){
     pin=$( grep PIN ${COLOG}2.log | sed -e "s/.* //" )
     ./$pop -c cl2 org link ${addr[2]} $pin
 
-    cat pop_desc.toml
     ./$pop -c cl1 org config pop_desc.toml
-    ./$pop -c cl2 -d 2 org config pop_desc.toml | tee pop_hash_file
+    ./$pop -c cl2 -d 2 org config pop_desc.toml > pop_hash_file
     pop_hash=$(grep config: pop_hash_file | sed -e "s/.* //")
     ./$pop -c cl1 org public $PUB_USER $pop_hash
     ./$pop -c cl2 org public $PUB_USER $pop_hash
+    ./$pop -c cl1 org public $pub_user1 $pop_hash
+    ./$pop -c cl2 org public $pub_user1 $pop_hash
     ./$pop -c cl1 org final $pop_hash
     ./$pop -c cl2 -d 2 org final $pop_hash | tail -n +3> final.toml
 }

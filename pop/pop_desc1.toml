@@ -1,0 +1,11 @@
+Name = "Proof-of-Personhood Party"
+DateTime = "2017-08-08 15:00 UTC"
+Location = "Earth, City1"
+[[servers]]
+  Address = "tcp://192.33.210.8:9200"
+  Public = "jlaPygnTgcFinbxojtFFop1U3DHqfNgWrvftHKf+Ihs="
+  Description = "Conode_1"
+[[servers]]
+  Address = "tcp://192.33.210.8:9202"
+  Public = "spAfFTTcTv4cSEXDreZxJAKin79Te8VfuQbNexdMjdo="
+  Description = "Conode_2"

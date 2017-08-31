@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"errors"
 
 	"github.com/BurntSushi/toml"
 	"github.com/satori/go.uuid"
@@ -66,7 +67,7 @@ func (c *Client) StoreConfig(dst network.Address, p *PopDesc, priv abstract.Scal
 	if e != nil {
 		return onet.NewClientError(e)
 	}
-	err := c.SendProtobuf(si, &StoreConfig{p, sg}, nil)
+	err := c.SendProtobuf(si, &storeConfig{p, sg}, nil)
 	if err != nil {
 		return err
 	}
@@ -77,8 +78,8 @@ func (c *Client) StoreConfig(dst network.Address, p *PopDesc, priv abstract.Scal
 func (c *Client) FetchFinal(dst network.Address, hash []byte) (
 	*FinalStatement, onet.ClientError) {
 	si := &network.ServerIdentity{Address: dst}
-	res := &FinalizeResponse{}
-	err := c.SendProtobuf(si, &FetchRequest{hash}, res)
+	res := &finalizeResponse{}
+	err := c.SendProtobuf(si, &fetchRequest{hash}, res)
 	if err != nil {
 		return nil, err
 	}
@@ -94,14 +95,14 @@ func (c *Client) FetchFinal(dst network.Address, hash []byte) (
 func (c *Client) Finalize(dst network.Address, p *PopDesc, attendees []abstract.Point,
 	priv abstract.Scalar) (*FinalStatement, onet.ClientError) {
 	si := &network.ServerIdentity{Address: dst}
-	req := &FinalizeRequest{}
+	req := &finalizeRequest{}
 	req.DescID = p.Hash()
 	req.Attendees = attendees
-	hash, err := req.Hash()
+	hash, err := req.hash()
 	if err != nil {
 		return nil, onet.NewClientError(err)
 	}
-	res := &FinalizeResponse{}
+	res := &finalizeResponse{}
 	sg, err := crypto.SignSchnorr(network.Suite, priv, hash)
 	if err != nil {
 		return nil, onet.NewClientError(err)
@@ -114,17 +115,20 @@ func (c *Client) Finalize(dst network.Address, p *PopDesc, attendees []abstract.
 	return res.Final, nil
 }
 
+// Merge takes the address of the conode-server, pop-description and the
+// private key of organizer. It triggers merge process on nodes mentioned in
+// config
 func (c *Client) Merge(dst network.Address, p *PopDesc, priv abstract.Scalar) (
 	*FinalStatement, onet.ClientError) {
 	si := &network.ServerIdentity{Address: dst}
-	res := &FinalizeResponse{}
+	res := &finalizeResponse{}
 	hash := p.Hash()
 	sg, err := crypto.SignSchnorr(network.Suite, priv, hash)
 	if err != nil {
 		return nil, onet.NewClientError(err)
 	}
 
-	e := c.SendProtobuf(si, &MergeRequest{hash, sg}, res)
+	e := c.SendProtobuf(si, &mergeRequest{hash, sg}, res)
 	if e != nil {
 		return nil, e
 	}
@@ -233,11 +237,21 @@ func (desc *PopDesc) toTomlStruct() (*popDescToml, error) {
 	if err != nil {
 		return nil, err
 	}
+	parties := make([]shortDescToml, len(desc.Parties))
+	for i, p := range desc.Parties {
+		parties[i] = shortDescToml{}
+		parties[i].Location = p.Location
+		parties[i].Roster, err = toToml(p.Roster)
+		if err != nil {
+			return nil, err
+		}
+	}
 	descToml := &popDescToml{
 		Name:     desc.Name,
 		DateTime: desc.DateTime,
 		Location: desc.Location,
 		Roster:   rostr,
+		Parties:  parties,
 	}
 	return descToml, nil
 }
@@ -304,13 +318,13 @@ func (fs *FinalStatement) toTomlStruct() (*finalStatementToml, error) {
 		return nil, err
 	}
 	if len(fs.Desc.Parties) > 1 {
-		descToml.Parties = make([]ShortDescToml, len(fs.Desc.Parties))
+		descToml.Parties = make([]shortDescToml, len(fs.Desc.Parties))
 		for i, p := range fs.Desc.Parties {
 			rostr, err := toToml(p.Roster)
 			if err != nil {
 				return nil, err
 			}
-			sh := ShortDescToml{
+			sh := shortDescToml{
 				Location: p.Location,
 				Roster:   rostr,
 			}
@@ -400,7 +414,7 @@ type popDescToml struct {
 	DateTime string
 	Location string
 	Roster   [][]string
-	Parties  []ShortDescToml
+	Parties  []shortDescToml
 }
 
 // represents Short Description of Pop party
@@ -410,7 +424,7 @@ type ShortDesc struct {
 	Roster   *onet.Roster
 }
 
-type ShortDescToml struct {
+type shortDescToml struct {
 	Location string
 	Roster   [][]string
 }
@@ -475,13 +489,13 @@ func toToml(r *onet.Roster) ([][]string, error) {
 }
 
 type PopToken struct {
-	Desc    *PopDesc
+	Final   *FinalStatement
 	Private abstract.Scalar
 	Public  abstract.Point
 }
 
 type popTokenToml struct {
-	Desc    *popDescToml
+	Final   *finalStatementToml
 	Private string
 	Public  string
 }
@@ -490,7 +504,7 @@ func newPopTokenFromTomlStruct(t *popTokenToml) (*PopToken, error) {
 	token := &PopToken{}
 	var err error
 	log.Infof("%+v", t)
-	token.Desc, err = newPopDescFromTomlStruct(t.Desc)
+	token.Final, err = newFinalStatementFromTomlStruct(t.Final)
 	if err != nil {
 		return nil, err
 	}
@@ -501,6 +515,9 @@ func newPopTokenFromTomlStruct(t *popTokenToml) (*PopToken, error) {
 	token.Public, err = crypto.String64ToPub(network.Suite, t.Public)
 	if err != nil {
 		return nil, err
+	}
+	if token.Final.Verify() != nil {
+		return nil, errors.New("FinalStatement is invalid")
 	}
 	return token, nil
 }

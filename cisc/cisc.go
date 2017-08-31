@@ -92,13 +92,19 @@ func adminLink(c *cli.Context) error {
 	si := &network.ServerIdentity{Address: addr}
 
 	pin := c.Args().Get(1)
+
+	cfg := loadConfigAdminOrFail(c)
+
 	public := network.Suite.Point().Null()
-	var kp *config.KeyPair
+	var found = true
+	var kp *keyPair
 	if pin != "" {
-		kp, err = loadKeyPair(c)
-		if kp == nil {
-			log.Info("Here")
-			kp = config.NewKeyPair(network.Suite)
+		kp, found = cfg.KeyPairs[string(addr)]
+		if !found {
+			ckp := config.NewKeyPair(network.Suite)
+			kp = &keyPair{}
+			kp.Public = ckp.Public
+			kp.Private = ckp.Secret
 		}
 		public = kp.Public
 	}
@@ -111,10 +117,11 @@ func adminLink(c *cli.Context) error {
 		return err
 	}
 	log.Info("Successfully linked with", addr)
-	// save keypair only if successful admin authorization
-	log.Info("Public before", kp.Public.String())
-	log.Info("Private before", kp.Secret.String())
-	saveKeyPair(c, kp)
+	// storing keys only if successfully linked
+	if !found {
+		cfg.KeyPairs[string(addr)] = kp
+	}
+	cfg.saveConfig(c)
 	return nil
 }
 
@@ -133,12 +140,12 @@ func adminStore(c *cli.Context) error {
 	addr := network.NewTCPAddress(fmt.Sprintf("%s:%s", addrs[0], port))
 	si := &network.ServerIdentity{Address: addr}
 
-	kp, err := loadKeyPair(c)
-	log.Info("Public after", kp.Public.String())
-	log.Info("Private after", kp.Secret.String())
-	if err != nil {
-		return err
+	cfg := loadConfigAdminOrFail(c)
+	kp, ok := cfg.KeyPairs[string(addr)]
+	if !ok {
+		log.Fatal("not linked")
 	}
+
 	t := c.String("type")
 	client := onet.NewClient(identity.ServiceName)
 	switch t {
@@ -157,7 +164,7 @@ func adminStore(c *cli.Context) error {
 			log.Error("error while Hashing")
 			return err
 		}
-		sig, err := crypto.SignSchnorr(network.Suite, kp.Secret, hash)
+		sig, err := crypto.SignSchnorr(network.Suite, kp.Private, hash)
 		if err != nil {
 			return err
 		}
@@ -211,9 +218,8 @@ func idCreate(c *cli.Context) error {
 	kp := &config.KeyPair{}
 	kp.Public = token.Public
 	kp.Secret = token.Private
-	i := identity.NewIdentity(group.Roster, thr, name, kp)
-	cfg := &ciscConfig{Identity: i}
-	log.ErrFatal(cfg.CreateIdentity())
+	cfg := newCiscConfig(identity.NewIdentity(group.Roster, thr, name, kp))
+	log.ErrFatal(cfg.CreateIdentity(token.Final.Attendees))
 	log.Infof("IC is %x", cfg.ID)
 	return cfg.saveConfig(c)
 }
@@ -234,7 +240,7 @@ func idConnect(c *cli.Context) error {
 	idBytes, err := hex.DecodeString(c.Args().Get(1))
 	log.ErrFatal(err)
 	id := identity.ID(idBytes)
-	cfg := &ciscConfig{Identity: identity.NewIdentity(group.Roster, 0, name, nil)}
+	cfg := newCiscConfig(identity.NewIdentity(group.Roster, 0, name, nil))
 	log.ErrFatal(cfg.AttachToIdentity(id))
 	log.Infof("Public key: %s",
 		cfg.Proposed.Device[cfg.DeviceName].Point.String())

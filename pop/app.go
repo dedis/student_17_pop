@@ -21,7 +21,7 @@ import (
 	"bytes"
 
 	"github.com/BurntSushi/toml"
-	"github.com/dedis/student_17_pop/pop/service"
+	"github.com/IlyaMarkovMipt/cothority/pop/service"
 	"gopkg.in/dedis/crypto.v0/abstract"
 	"gopkg.in/dedis/crypto.v0/anon"
 	"gopkg.in/dedis/crypto.v0/config"
@@ -445,8 +445,8 @@ func attSign(c *cli.Context) error {
 	Set := anon.Set(party.Final.Attendees)
 	sigtag := anon.Sign(network.Suite, random.Stream, msg,
 		Set, ctx, party.Index, party.Private)
-	sig := sigtag[:len(sigtag)-32]
-	tag := sigtag[len(sigtag)-32:]
+	sig := sigtag[:len(sigtag)-service.SIGSIZE/2]
+	tag := sigtag[len(sigtag)-service.SIGSIZE/2:]
 	log.Lvlf2("\nSignature: %s\nTag: %s", base64.StdEncoding.EncodeToString(sig),
 		base64.StdEncoding.EncodeToString(tag))
 	return nil

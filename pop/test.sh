@@ -86,7 +86,7 @@ testMerge(){
 	merged_hash=$(grep hash: pop_hash_file | sed -e "s/.* //")
 
 	for i in {1..4}; do
-		runDbgCl 2 $i attendee sign msg1 ctx1 $merged_hash | tee sign$i.toml
+		runDbgCl 2 $i attendee sign msg1 ctx1 $merged_hash > sign$i.toml
 		tag[$i]=$( grep Tag: sign$i.toml | sed -e "s/.* //")
 		sig[$i]=$( grep Signature: sign$i.toml | sed -e "s/.* //")
 	done

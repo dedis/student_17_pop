@@ -1,0 +1,29 @@
+[[parties]]
+Location = "Earth, City1"
+[[parties.servers]]
+  Address = "tcp://192.33.210.8:9200"
+  Public = "jlaPygnTgcFinbxojtFFop1U3DHqfNgWrvftHKf+Ihs="
+  Description = "Conode_1"
+[[parties.servers]]
+  Address = "tcp://192.33.210.8:9202"
+  Public = "spAfFTTcTv4cSEXDreZxJAKin79Te8VfuQbNexdMjdo="
+  Description = "Conode_2"
+[[parties]]
+Location = "Earth, City2"
+[[parties.servers]]
+  Address = "tcp://192.33.210.8:9202"
+  Public = "spAfFTTcTv4cSEXDreZxJAKin79Te8VfuQbNexdMjdo="
+  Description = "Conode_2"
+[[parties.servers]]
+  Address = "tcp://192.33.210.8:9204"
+  Public = "P1Yom3lJdk85M5hHzHbuICTtA41lJ/ZJD2Qo974KlIM="
+[[parties]]
+Location = "Earth, City3"
+[[parties.servers]]
+  Address = "tcp://192.33.210.8:9204"
+  Public = "P1Yom3lJdk85M5hHzHbuICTtA41lJ/ZJD2Qo974KlIM="
+  Description = "Conode_3"
+[[parties.servers]]
+  Address = "tcp://192.33.210.8:9200"
+  Public = "jlaPygnTgcFinbxojtFFop1U3DHqfNgWrvftHKf+Ihs="
+  Description = "Conode_1"

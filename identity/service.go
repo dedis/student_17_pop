@@ -24,6 +24,7 @@ import (
 	"gopkg.in/dedis/cothority.v1/messaging"
 	"gopkg.in/dedis/cothority.v1/skipchain"
 	"gopkg.in/dedis/crypto.v0/abstract"
+	"gopkg.in/dedis/crypto.v0/anon"
 	"gopkg.in/dedis/crypto.v0/random"
 	"gopkg.in/dedis/onet.v1"
 	"gopkg.in/dedis/onet.v1/crypto"
@@ -33,6 +34,12 @@ import (
 
 // ServiceName can be used to refer to the name of this service
 const ServiceName = "Identity"
+
+// Size of nonce used in autentication
+const nonceSize = 64
+
+// Default number of skipchains, each user can create
+const defaultNumberSkipchains = 5
 
 var identityService onet.ServiceID
 
@@ -55,6 +62,7 @@ type Service struct {
 	propagateData      messaging.PropagationFunc
 	identitiesMutex    sync.Mutex
 	skipchain          *skipchain.Client
+	limits             map[string]int8
 	auth               authData
 }
 
@@ -73,11 +81,14 @@ type Storage struct {
 }
 
 type authData struct {
-	// sets of pins and keys
+	// set of pins and keys
 	pins map[string]struct{}
-	// key of this set is abstract.Point.String()
-	keys      []abstract.Point
+	// sets of public keys to verify linkable ring signatures
+	sets []anon.Set
+	// list of adminKeys
 	adminKeys []abstract.Point
+	// set of nonces
+	nonces map[string]struct{}
 }
 
 /*
@@ -128,35 +139,59 @@ func (s *Service) StoreKeys(req *StoreKeys) (network.Message, onet.ClientError) 
 		return nil, onet.NewClientErrorCode(ErrorInvalidSignature,
 			"Invalid signature on StoreKeys")
 	}
-	s.auth.keys = append(s.auth.keys, req.Final.Attendees...)
+	s.auth.sets = append(s.auth.sets, anon.Set(req.Final.Attendees))
 	return nil, nil
+}
+
+// Authenticate will create nonce and ctx and send it to user
+// It saves nonces in set
+// Replay attack is impossible, because after successful authentification nonce will
+// be deleted.
+func (s *Service) Authenticate(ap *Authenticate) (network.Message, onet.ClientError) {
+	ap.Ctx = []byte(ServiceName + s.ServerIdentity().String())
+	ap.Nonce = random.Bytes(nonceSize, random.Stream)
+	s.auth.nonces[string(ap.Nonce)] = struct{}{}
+	return ap, nil
 }
 
 // CreateIdentity will register a new SkipChain and add it to our list of
 // managed identities.
 func (s *Service) CreateIdentity(ai *CreateIdentity) (network.Message, onet.ClientError) {
-	log.Lvlf3("%s Creating new identity with data %+v", s.ServerIdentity(), ai.Data)
-	ids := &Storage{
-		Latest: ai.Data,
+	ctx := []byte(ServiceName + s.ServerIdentity().String())
+	if _, ok := s.auth.nonces[string(ai.Nonce)]; !ok {
+		log.Error("Given nonce is not stored on ", s.ServerIdentity())
+		return nil, onet.NewClientErrorCode(ErrorAuthentication,
+			fmt.Sprintf("Given nonce is not stored on %s", s.ServerIdentity()))
 	}
-
-	hash, err := ai.Hash()
-	if err != nil {
-		return nil, onet.NewClientError(err)
-	}
-	valid := false
-
-	for _, key := range s.auth.keys {
-		if crypto.VerifySchnorr(network.Suite, key, hash, ai.Sig) == nil {
+	var valid bool
+	var tag string
+	for _, set := range s.auth.sets {
+		t, err := anon.Verify(network.Suite, ai.Nonce, set, ctx, ai.Sig)
+		if err == nil {
+			tag = string(t)
 			valid = true
+			// The counter will be decremented in propagation handler
+			if n, ok := s.limits[tag]; !ok {
+				s.limits[tag] = defaultNumberSkipchains
+			} else {
+				if n <= 0 {
+					return nil, onet.NewClientErrorCode(ErrorAuthentication,
+						"No more skipchains is allowed to create")
+				}
+			}
+			// authentication succeeded. we need to delete the nonce
+			delete(s.auth.nonces, string(ai.Nonce))
 			break
 		}
 	}
-
 	if !valid {
-		log.Error(s.ServerIdentity(), "No keys for sent signature are stored")
-		return nil, onet.NewClientErrorCode(ErrorInvalidSignature,
+		log.Error(s.ServerIdentity(), "Authentication is failed")
+		return nil, onet.NewClientErrorCode(ErrorAuthentication,
 			"Invalid Signature on CreateIdentity")
+	}
+	log.Lvlf3("%s Creating new identity with data %+v", s.ServerIdentity(), ai.Data)
+	ids := &Storage{
+		Latest: ai.Data,
 	}
 	log.Lvl3("Creating Root-skipchain")
 	var cerr onet.ClientError
@@ -173,7 +208,7 @@ func (s *Service) CreateIdentity(ai *CreateIdentity) (network.Message, onet.Clie
 	}
 
 	roster := ids.SCRoot.Roster
-	replies, err := s.propagateIdentity(roster, &PropagateIdentity{ids}, propagateTimeout)
+	replies, err := s.propagateIdentity(roster, &PropagateIdentity{ids, tag}, propagateTimeout)
 	if err != nil {
 		return nil, onet.NewClientErrorCode(ErrorOnet, err.Error())
 	}
@@ -497,6 +532,16 @@ func (s *Service) propagateIdentityHandler(msg network.Message) {
 		log.Error("Got a wrong message for propagation")
 		return
 	}
+	if n, ok := s.limits[string(pi.Tag)]; ok {
+		if n <= 0 {
+			// unreachable in normal work mode of nodes
+			log.Error("No more skipchains is allowed to create")
+			return
+		}
+	} else {
+		s.limits[string(pi.Tag)] = defaultNumberSkipchains
+	}
+	s.limits[string(pi.Tag)]--
 	id := ID(pi.SCData.Hash)
 	if s.getIdentityStorage(id) != nil {
 		log.Error("Couldn't store new identity")
@@ -590,12 +635,14 @@ func newIdentityService(c *onet.Context) onet.Service {
 	}
 	if err := s.RegisterHandlers(s.ProposeSend, s.ProposeVote,
 		s.CreateIdentity, s.ProposeUpdate, s.DataUpdate, s.PinRequest,
-		s.StoreKeys); err != nil {
+		s.StoreKeys, s.Authenticate); err != nil {
 		log.Fatal("Registration error:", err)
 	}
 	skipchain.RegisterVerification(c, verifyIdentity, s.VerifyBlock)
 	s.auth.pins = make(map[string]struct{})
-	s.auth.keys = make([]abstract.Point, 0)
+	s.auth.nonces = make(map[string]struct{})
+	s.auth.sets = make([]anon.Set, 0)
 	s.auth.adminKeys = make([]abstract.Point, 0)
+	s.limits = make(map[string]int8)
 	return s
 }

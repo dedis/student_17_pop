@@ -1,0 +1,10 @@
+Attendees = ["rYxKqD/E2k9qx+2gjsiJINPPlh0Sj+jBmMYorzRN6SE=", "YiolYTrnJKZyX9Xgx6eFR4sRpF5+CRvWOJY7nTo8g/A="]
+Signature = "7QwP06V/WFc7h6suCknHRcgqoWZEtz/Bk1Jgntpj6Mb1kUi+fLG22iF/BOcXsGOaHiXQguVQFAg9b4QG1f1ABw=="
+Merged = false
+
+[Desc]
+  Name = "Proof-of-Personhood Party"
+  DateTime = "2017-08-08 15:00 UTC"
+  Location = "Earth, City1"
+  Roster = [["tcp://192.33.210.8:9200", "Conode_1", "9de0d0fc-855f-597e-86ab-b74e2a52728e", "jlaPygnTgcFinbxojtFFop1U3DHqfNgWrvftHKf+Ihs="], ["tcp://192.33.210.8:9202", "Conode_2", "6ee09f15-4c82-5a55-9b1e-e6824529234d", "spAfFTTcTv4cSEXDreZxJAKin79Te8VfuQbNexdMjdo="], ["tcp://192.33.210.8:9204", "Conode_3", "c790c16d-cd62-5834-8a67-955d2dd3b3fd", "P1Yom3lJdk85M5hHzHbuICTtA41lJ/ZJD2Qo974KlIM="]]
+  Parties = []

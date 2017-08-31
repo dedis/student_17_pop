@@ -16,7 +16,7 @@ import (
 	"path/filepath"
 
 	"github.com/dedis/student_17_pop/identity"
-	"gopkg.in/dedis/crypto.v0/config"
+	"gopkg.in/dedis/crypto.v0/abstract"
 	"gopkg.in/dedis/onet.v1"
 	"gopkg.in/dedis/onet.v1/app"
 	"gopkg.in/dedis/onet.v1/log"
@@ -26,50 +26,31 @@ import (
 
 func init() {
 	network.RegisterMessage(ciscConfig{})
-	network.RegisterMessage(keyPairSerialized{})
+	network.RegisterMessage(keyPair{})
 }
 
-type keyPairSerialized struct {
-	Public  []byte
-	Private []byte
-}
-
-func keyPairSerialize(kp *config.KeyPair) (*keyPairSerialized, error) {
-	pub, err := kp.Public.MarshalBinary()
-	if err != nil {
-		return nil, err
-	}
-	priv, err := kp.Secret.MarshalBinary()
-	if err != nil {
-		return nil, err
-	}
-	return &keyPairSerialized{pub, priv}, nil
-}
-
-func keyPairDeserialize(kp *keyPairSerialized) (*config.KeyPair, error) {
-	pub := network.Suite.Point().Null()
-	err := pub.UnmarshalBinary(kp.Public)
-	if err != nil {
-		return nil, err
-	}
-	priv := network.Suite.Scalar().Zero()
-	err = priv.UnmarshalBinary(kp.Private)
-	if err != nil {
-		return nil, err
-	}
-	return &config.KeyPair{network.Suite, pub, priv}, nil
+type keyPair struct {
+	Public  abstract.Point
+	Private abstract.Scalar
 }
 
 type ciscConfig struct {
 	*identity.Identity
 	Follow []*identity.Identity
+	// admin key pairs. Key of map is address of conode
+	KeyPairs map[string]*keyPair
+}
+
+func newCiscConfig(i *identity.Identity) *ciscConfig {
+	return &ciscConfig{Identity: i,
+		KeyPairs: make(map[string]*keyPair)}
 }
 
 // loadConfig will try to load the configuration and `fatal` if it is there but
 // not valid. If the config-file is missing altogether, loaded will be false and
 // an empty config-file will be returned.
 func loadConfig(c *cli.Context) (cfg *ciscConfig, loaded bool) {
-	cfg = &ciscConfig{Identity: &identity.Identity{}}
+	cfg = newCiscConfig(&identity.Identity{})
 	loaded = true
 
 	configFile := getConfig(c)
@@ -107,6 +88,16 @@ func loadConfigOrFail(c *cli.Context) *ciscConfig {
 	return cfg
 }
 
+// loadConfigAdminOrFail tries to load the config and fails if it doesn't succeed.
+// it doesn't load data and propose updates unlike loadConfigOrFail
+func loadConfigAdminOrFail(c *cli.Context) *ciscConfig {
+	cfg, loaded := loadConfig(c)
+	if !loaded {
+		log.Fatal("Couldn't load configuration-file")
+	}
+	return cfg
+}
+
 // Saves the clientApp in the configfile - refuses to save an empty file.
 func (cfg *ciscConfig) saveConfig(c *cli.Context) error {
 	configFile := getConfig(c)
@@ -120,48 +111,6 @@ func (cfg *ciscConfig) saveConfig(c *cli.Context) error {
 	}
 	log.Lvl2("Saving to", configFile)
 	return ioutil.WriteFile(configFile, buf, 0660)
-}
-
-func loadKeyPair(c *cli.Context) (*config.KeyPair, error) {
-	file := getKeyConfig(c)
-	log.Lvl2("Loading keys from", file)
-	buf, err := ioutil.ReadFile(file)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, err
-		}
-	}
-	_, msg, err := network.Unmarshal(buf)
-	if err != nil {
-		return nil, err
-	}
-	kps, ok := msg.(*keyPairSerialized)
-	if !ok {
-		return nil, errors.New("Wrong message-type in keypair config-file")
-	}
-	kp, err := keyPairDeserialize(kps)
-	if err != nil {
-		return nil, err
-	}
-	return kp, nil
-}
-
-// Saves key-pair in admin key config-file
-func saveKeyPair(c *cli.Context, kp *config.KeyPair) error {
-	file := getKeyConfig(c)
-	if kp == nil {
-		return errors.New("Cannot save empty keypair")
-	}
-	kps, err := keyPairSerialize(kp)
-	if err != nil {
-		return err
-	}
-	buf, err := network.Marshal(kps)
-	if err != nil {
-		return err
-	}
-	log.Lvl2("Saving keys to", file)
-	return ioutil.WriteFile(file, buf, 0660)
 }
 
 // convenience function to send and vote a proposition and update.
